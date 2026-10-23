@@ -6,3 +6,4 @@ environment:
 
 workspace:
   - packages/halvorai_ingest
+  - packages/halvorai_ingest_flutter

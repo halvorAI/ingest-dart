@@ -9,6 +9,8 @@
 - `validateEvent`: the APE v0.1 rules of the Node.js SDK, including the card-number guard.
 - `SourceKey`, `signEvent`, `verifyEvent`: detached JWS over RFC 8785 JCS, byte-identical to the Node.js and Python SDKs.
 - Redaction of card numbers, CVCs, secret keys and private keys, including JSON evidence.
+- `newEventId` and `formatUtc` are public, for layers that stamp events before handing them over.
+- Tests run against ape-schema's shared conformance files (`tool/sync_conformance.sh`).
 
 Differences from the Node.js and Python SDKs, on purpose:
 - A spool entry the API refuses for good is removed instead of blocking later entries, and a single event that is too large is dropped, never spooled.

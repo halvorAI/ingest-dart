@@ -9,15 +9,19 @@ jobs:
   test:
     strategy:
       matrix:
-        sdk: ['3.6.0', stable]
+        # 3.27 is the oldest Flutter with Dart 3.6, the packages' minimum.
+        flutter: ['3.27.0', stable]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
+      - uses: subosito/flutter-action@v2
         with:
-          sdk: ${{ matrix.sdk }}
-      - run: dart pub get
+          flutter-version: ${{ matrix.flutter == 'stable' && '' || matrix.flutter }}
+          channel: stable
+      - run: flutter pub get
       - run: dart format --line-length 100 --output=none --set-exit-if-changed packages
-      - run: dart analyze --fatal-infos
+      - run: flutter analyze --fatal-infos
       - run: dart test
         working-directory: packages/halvorai_ingest
+      - run: flutter test
+        working-directory: packages/halvorai_ingest_flutter

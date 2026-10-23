@@ -18,7 +18,7 @@ resolution: workspace
 # Test-only keys: a fake PEM block for redaction and the shared signing vector.
 false_secrets:
   - /test/redact_test.dart
-  - /test/fixtures/sign-vector.json
+  - /test/fixtures/conformance/sign-vector.json
 
 dependencies:
   crypto: ^3.0.6

@@ -26,6 +26,7 @@ export 'src/context.dart'
         currentContext,
         withAgentContext;
 export 'src/hash.dart' show evidenceSha256, hashInstruction;
+export 'src/ids.dart' show newEventId;
 export 'src/models.dart';
 export 'src/redact.dart' show ExtraPattern, containsPan, redactDeep, redactText;
 export 'src/sign.dart' show SourceKey, signEvent, verifyEvent;
@@ -46,4 +47,5 @@ export 'src/transport.dart'
         productionEndpoint,
         sandboxEndpoint;
 export 'src/validate.dart' show validateEvent;
+export 'src/time.dart' show formatUtc;
 export 'src/version.dart' show packageVersion, sdkName;

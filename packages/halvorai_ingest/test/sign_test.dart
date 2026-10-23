@@ -5,9 +5,9 @@ import 'package:halvorai_ingest/src/canonical.dart';
 import 'package:halvorai_ingest/src/sign.dart';
 import 'package:test/test.dart';
 
-/// The cross-language vector shared with ingest-python (tests/fixtures/sign-vector.json).
-final _vector =
-    jsonDecode(File('test/fixtures/sign-vector.json').readAsStringSync()) as Map<String, Object?>;
+/// The cross-language signing vector from ape-schema/conformance.
+final _vector = jsonDecode(File('test/fixtures/conformance/sign-vector.json').readAsStringSync())
+    as Map<String, Object?>;
 final _event = _vector['event'] as Map<String, Object?>;
 final _privateJwk = (_vector['private_jwk'] as Map).cast<String, Object?>();
 final _publicJwk = (_vector['public_jwk'] as Map).cast<String, Object?>();

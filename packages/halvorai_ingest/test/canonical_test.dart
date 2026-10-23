@@ -5,9 +5,9 @@ import 'dart:typed_data';
 import 'package:halvorai_ingest/src/canonical.dart';
 import 'package:test/test.dart';
 
-/// Generated from the TypeScript SDK by tool/gen_jcs_vectors.mjs.
-final _vectors =
-    jsonDecode(File('test/fixtures/jcs-vectors.json').readAsStringSync()) as Map<String, Object?>;
+/// From ape-schema/conformance, refreshed by tool/sync_conformance.sh.
+final _vectors = jsonDecode(File('test/fixtures/conformance/jcs-vectors.json').readAsStringSync())
+    as Map<String, Object?>;
 
 double _fromBits(String hex) {
   final data = ByteData(8)
