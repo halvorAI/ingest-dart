@@ -1,0 +1,30 @@
+name: halvorai_ingest_flutter
+description: Signed, attributed payment events for AI agents in Flutter apps. Device keys, offline spool, no API key in the app.
+version: 0.1.0-dev.1
+homepage: https://docs.halvorai.com
+repository: https://github.com/halvorAI/ingest-dart/tree/main/packages/halvorai_ingest_flutter
+issue_tracker: https://github.com/halvorAI/ingest-dart/issues
+topics:
+  - ai-agents
+  - payments
+  - x402
+  - audit
+
+environment:
+  sdk: ^3.6.0
+  flutter: ">=3.27.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_secure_storage: ^10.3.4
+  halvorai_ingest: ^0.1.0-dev.1
+  http: ^1.3.0
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lints: ^5.0.0

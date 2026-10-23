@@ -2,7 +2,7 @@
 
 Signed, attributed payment events for AI agents, in pure Dart. HalvorAI records each payment an agent makes, with the agent, the owner it acted for, the instruction it followed and the network proof that came with it. It is never in the payment path: `emit` returns at once, never throws and never waits on the network.
 
-> **Developer preview.** This is the core package. Flutter apps will use `halvorai_ingest_flutter` (in progress), which adds secure key storage, a disk spool and device provisioning on top of it.
+> **Developer preview.** This is the core package. Flutter apps use [`halvorai_ingest_flutter`](../halvorai_ingest_flutter), which adds secure key storage, a disk spool and device provisioning on top of it.
 
 - Docs: [docs.halvorai.com](https://docs.halvorai.com)
 - Event format: [Agent Payment Event (APE) v0.1](https://schema.halvorai.com)
@@ -72,7 +72,7 @@ dart analyze
 dart test
 ```
 
-`test/fixtures/sign-vector.json` is shared with ingest-python. `test/fixtures/jcs-vectors.json` comes from the TypeScript SDK's `canonicalize` via `tool/gen_jcs_vectors.mjs`.
+`test/fixtures/conformance/` is a copy of [ape-schema's conformance files](https://schema.halvorai.com/conformance/), the events, signing vector and canonical-JSON vectors the Node.js and Python SDKs test against too. Refresh it with `tool/sync_conformance.sh`.
 
 ## License
 
