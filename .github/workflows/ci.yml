@@ -7,16 +7,24 @@ permissions:
   contents: read
 jobs:
   test:
+    name: test (${{ matrix.label }})
     strategy:
+      # Report each Flutter version on its own instead of cancelling the other.
+      fail-fast: false
       matrix:
-        # 3.27 is the oldest Flutter with Dart 3.6, the packages' minimum.
-        flutter: ['3.27.0', stable]
+        include:
+          # 3.27 is the oldest Flutter with Dart 3.6, the packages' minimum.
+          - label: flutter 3.27.0
+            flutter-version: '3.27.0'
+          # An empty version means the latest release on the channel.
+          - label: flutter stable
+            flutter-version: ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ matrix.flutter == 'stable' && '' || matrix.flutter }}
+          flutter-version: ${{ matrix.flutter-version }}
           channel: stable
       - run: flutter pub get
       - run: dart format --line-length 100 --output=none --set-exit-if-changed packages
