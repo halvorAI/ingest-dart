@@ -1,0 +1,30 @@
+name: halvorai_ingest
+description: Signed, attributed payment events for AI agents. Never in the payment path.
+version: 0.1.0-dev.1
+homepage: https://docs.halvorai.com
+repository: https://github.com/halvorAI/ingest-dart/tree/main/packages/halvorai_ingest
+issue_tracker: https://github.com/halvorAI/ingest-dart/issues
+topics:
+  - ai-agents
+  - payments
+  - x402
+  - audit
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+# Test-only keys: a fake PEM block for redaction and the shared signing vector.
+false_secrets:
+  - /test/redact_test.dart
+  - /test/fixtures/sign-vector.json
+
+dependencies:
+  crypto: ^3.0.6
+  cryptography: ^2.7.0
+  http: ^1.3.0
+
+dev_dependencies:
+  lints: ^5.0.0
+  test: ^1.25.0
