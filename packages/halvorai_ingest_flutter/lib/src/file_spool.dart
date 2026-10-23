@@ -81,6 +81,7 @@ class FileSpool implements Spool {
   }
 
   Future<void> _enforceLimits() async {
+    await _removeStaleTempFiles();
     final entries = await _entries();
     final cutoff = _now().subtract(maxAge).microsecondsSinceEpoch;
     var expired = 0;
@@ -102,6 +103,22 @@ class FileSpool implements Spool {
     }
     if (expired > 0) onEvict?.call(expired, 'older than ${maxAge.inDays} days');
     if (overflow > 0) onEvict?.call(overflow, 'spool over ${maxBytes ~/ 1024} KB');
+  }
+
+  /// A temp file older than a minute was left by a crash between write and rename; the batch
+  /// in it never made it into the spool. A fresh one may belong to a write still under way.
+  Future<void> _removeStaleTempFiles() async {
+    if (!await directory.exists()) return;
+    final cutoff = _now().subtract(const Duration(minutes: 1));
+    await for (final entity in directory.list()) {
+      final name = entity.uri.pathSegments.last;
+      if (entity is! File || !name.startsWith('.') || !name.endsWith('.tmp')) continue;
+      try {
+        if ((await entity.lastModified()).isBefore(cutoff)) await entity.delete();
+      } on FileSystemException {
+        // Renamed or deleted meanwhile.
+      }
+    }
   }
 
   /// Deletes an entry and returns how many events it held.

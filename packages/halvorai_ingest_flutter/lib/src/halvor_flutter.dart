@@ -124,6 +124,14 @@ class HalvorFlutter with WidgetsBindingObserver {
     @visibleForTesting http.Client? httpClient,
     @visibleForTesting bool? debugBuild,
   }) async {
+    // Secure storage and the data directory are platform channels, which need the binding.
+    // Does nothing if the app already initialized it.
+    String? bindingProblem;
+    try {
+      WidgetsFlutterBinding.ensureInitialized();
+    } catch (e) {
+      bindingProblem = 'could not initialize the Flutter binding: $e';
+    }
     final forwarding = provisionUrl != null || forwardUrl != null;
     String? problem;
     if (forwarding && debugApiKey != null) {
@@ -134,6 +142,15 @@ class HalvorFlutter with WidgetsBindingObserver {
       problem = 'no destination: pass provisionUrl and forwardUrl';
     } else if (debugApiKey != null) {
       problem = apiKeyProblem(debugApiKey, environment, debugBuild: debugBuild ?? kDebugMode);
+    }
+    // These URLs carry the session headers or the API key.
+    for (final url in [
+      provisionUrl,
+      forwardUrl,
+      if (debugEndpoint != null) Uri.tryParse(debugEndpoint) ?? Uri(),
+    ]) {
+      if (problem != null || url == null) continue;
+      problem = insecureUrlProblem(url);
     }
 
     Directory? directory = dataDirectory;
@@ -148,7 +165,8 @@ class HalvorFlutter with WidgetsBindingObserver {
           environment: environment,
         );
       } catch (e) {
-        problem = 'could not open secure storage: $e';
+        problem = 'could not open secure storage: $e'
+            '${bindingProblem == null ? '' : ' ($bindingProblem)'}';
       }
     }
 
@@ -176,15 +194,24 @@ class HalvorFlutter with WidgetsBindingObserver {
       halvor._disable(problem);
       return halvor;
     }
-    if (observeLifecycle) {
-      WidgetsBinding.instance.addObserver(halvor);
-      halvor._observing = true;
+    if (bindingProblem != null) halvor._report(SdkError(SdkErrorCode.config, bindingProblem));
+    if (observeLifecycle && bindingProblem == null) {
+      try {
+        WidgetsBinding.instance.addObserver(halvor);
+        halvor._observing = true;
+      } catch (e) {
+        // Delivery still works; only flushing on background and foreground is lost.
+        halvor._report(SdkError(
+          SdkErrorCode.config,
+          'not watching the app lifecycle ($e); delivery still works',
+        ));
+      }
     }
     final registered = await _guard(halvor, () => identity!.registered());
     if (registered != null) {
       halvor._ready(registered);
     } else {
-      unawaited(halvor._register());
+      unawaited(halvor._startRegistration());
     }
     return halvor;
   }
@@ -214,10 +241,12 @@ class HalvorFlutter with WidgetsBindingObserver {
   var _pendingDropReported = false;
   bool _disabled = false;
   bool _closed = false;
+  bool _reset = false;
   bool _observing = false;
   bool _registering = false;
   int _registrationAttempt = 0;
   Timer? _registrationTimer;
+  Future<void>? _registration;
 
   /// True once the device is registered and events are being delivered.
   bool get isReady => _client != null;
@@ -295,9 +324,21 @@ class HalvorFlutter with WidgetsBindingObserver {
 
   /// Forgets this install's key and queued events, for example when the user deletes their
   /// account. This instance stops; the next [start] registers a new key.
+  ///
+  /// Nothing signed with the old key is sent or spooled after this completes: delivery is
+  /// discarded rather than drained, and the spool is deleted only once it has stopped.
   Future<void> resetIdentity() async {
-    await close(timeout: Duration.zero);
+    _closed = true;
+    _reset = true;
+    _stopObserving();
+    _registrationTimer?.cancel();
     _pending.clear();
+    final stopped = _client?.discard() ?? Future<void>.value();
+    // Abort a request in flight, so discarding does not wait for it to time out.
+    if (_ownsHttp) _http.close();
+    await stopped;
+    // A registration under way could otherwise make a new key after the old one is deleted.
+    await _registration;
     await _identity?.reset();
     final spool = Directory('${_dataDirectory.path}/spool');
     if (await spool.exists()) await spool.delete(recursive: true);
@@ -316,7 +357,7 @@ class HalvorFlutter with WidgetsBindingObserver {
         // Coming back often means the network is back too.
         if (_client == null) {
           _registrationTimer?.cancel();
-          unawaited(_register());
+          unawaited(_startRegistration());
         } else {
           unawaited(flush(timeout: const Duration(seconds: 10)));
         }
@@ -334,6 +375,14 @@ class HalvorFlutter with WidgetsBindingObserver {
   // -------------------------------------------------------------------------------------------
   // Registration
 
+  /// Runs one registration attempt, remembered so [resetIdentity] can wait for it.
+  /// An attempt already under way is reused, so the remembered future is always the real one.
+  Future<void> _startRegistration() {
+    final running = _registration;
+    if (_registering && running != null) return running;
+    return _registration = _register();
+  }
+
   Future<void> _register() async {
     final identity = _identity;
     if (identity == null || _registering || _client != null || _closed) return;
@@ -342,17 +391,17 @@ class HalvorFlutter with WidgetsBindingObserver {
       final key = await identity.pending();
       final sourceId = await registerKey(
         client: _http,
-        url: _apiKey != null
-            ? Uri.parse(
-                '${(_endpoint ?? sandboxEndpoint).replaceFirst(RegExp(r'/+$'), '')}/v1/sources')
-            : _provisionUrl!,
+        url: _apiKey != null ? _sourcesUrl(_endpoint ?? sandboxEndpoint) : _provisionUrl!,
         key: key,
         name: _deviceName,
         headers: _headers,
         apiKey: _apiKey,
       );
-      if (_closed) return;
-      _ready(await identity.markRegistered(sourceId));
+      if (_reset) return;
+      // Keep the id even if the app closed meanwhile: the backend has registered this key, and
+      // the next start should use it rather than register it again.
+      final registered = await identity.markRegistered(sourceId);
+      if (!_closed) _ready(registered);
     } catch (e) {
       _report(SdkError(
         e is ProvisioningException && (e.status == 400 || e.status == 422)
@@ -373,7 +422,7 @@ class HalvorFlutter with WidgetsBindingObserver {
         _registrationRetryDelays[min(_registrationAttempt, _registrationRetryDelays.length - 1)];
     _registrationAttempt += 1;
     _registrationTimer?.cancel();
-    _registrationTimer = Timer(delay, () => unawaited(_register()));
+    _registrationTimer = Timer(delay, () => unawaited(_startRegistration()));
   }
 
   void _ready(SourceKey key) {
@@ -399,16 +448,25 @@ class HalvorFlutter with WidgetsBindingObserver {
       retryDelays: _retryDelays,
     );
     _client = client;
-    // Send what waited, each in the context it was emitted in.
+    // Send what waited, each in exactly the context it was emitted in. The root zone has no
+    // context, so whatever zone registration finished in cannot leak into these events.
     final waiting = [..._pending];
     _pending.clear();
-    for (final (event, context) in waiting) {
-      if (context == null) {
-        client.emitJson(event);
-      } else {
-        withAgentContext(context, () => client.emitJson(event));
+    Zone.root.run(() {
+      for (final (event, context) in waiting) {
+        if (context == null) {
+          client.emitJson(event);
+        } else {
+          withAgentContext(context, () => client.emitJson(event));
+        }
       }
-    }
+    });
+  }
+
+  /// `{endpoint}/v1/sources`, also when [endpoint] is given as a full `/v1/events` URL.
+  static Uri _sourcesUrl(String endpoint) {
+    final base = endpoint.replaceFirst(RegExp(r'/+$'), '').replaceFirst(RegExp(r'/v1/events$'), '');
+    return Uri.parse('$base/v1/sources');
   }
 
   // -------------------------------------------------------------------------------------------

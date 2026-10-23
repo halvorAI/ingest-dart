@@ -70,4 +70,52 @@ void main() {
       'b': {'v': 'x'},
     });
   });
+
+  group('a card number with more digits next to it', () {
+    // From the core review: the whole run is longer than 19 digits or fails Luhn, but a
+    // 13 to 19 digit stretch of it is a card number.
+    for (final text in [
+      'card 4111111111111111 12 ok',
+      'card 4111 1111 1111 1111 2026',
+      '4111111111111111-5',
+      'ref 9 4111111111111111',
+    ]) {
+      test('is redacted: $text', () {
+        expect(redactText(text), isNot(contains('4111')));
+        expect(redactText(text), contains('[redacted:pan]'));
+      });
+    }
+
+    test('the validator keeps the spec rule, which only looks at whole runs', () {
+      // Changing what receivers reject is a spec decision (ape-schema docs/FIELDS.md).
+      expect(containsPan('card 4111111111111111 12 ok'), isFalse);
+      expect(containsPan('card 4111111111111111 ok'), isTrue);
+    });
+
+    test('short numbers are still left alone', () {
+      expect(redactText('order 1234567890 for 2'), 'order 1234567890 for 2');
+    });
+
+    test('a card written in groups is caught however it is grouped', () {
+      expect(redactText('amex 3782 822463 10005 exp'), 'amex [redacted:pan] exp');
+    });
+  });
+
+  group('large numbers that are not card numbers are left alone', () {
+    // From the second review: checking every 13 to 19 digit stretch redacted these.
+    for (final text in [
+      'amount 1000000000000000000 wei', // 1 ETH
+      '{"value":"1000000000000000000"}',
+      'order 12345678901234567890',
+      'tx 115792089237316195423570985008687907853269984665640564039457',
+      'zeros 0000 0000 0000 0000 1234',
+    ]) {
+      test(text, () => expect(redactText(text), text));
+    }
+  });
+
+  test('a five-digit number after a CVC label is not partly redacted', () {
+    expect(redactText('cvc 12345'), 'cvc 12345');
+    expect(redactText('cvc 123 and more'), 'cvc [redacted:cvc] and more');
+  });
 }

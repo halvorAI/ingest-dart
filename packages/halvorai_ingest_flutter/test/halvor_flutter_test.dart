@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -31,12 +32,14 @@ class FakeBackend {
   final deliveries = <http.Request>[];
   var registrationFailures = 0;
   var deliveryDown = false;
+  var registrationDelay = Duration.zero;
   var _sources = 0;
 
   late final client = MockClient((request) async {
     switch (request.url.path) {
       case '/halvor/sources' || '/v1/sources':
         registrations.add(request);
+        await Future<void>.delayed(registrationDelay);
         if (registrationFailures > 0) {
           registrationFailures--;
           return http.Response('down', 503);
@@ -95,6 +98,7 @@ void main() {
     List<Duration> registrationRetryDelays = const [Duration(milliseconds: 10)],
     int maxPendingEvents = 1000,
     Duration flushInterval = const Duration(hours: 1),
+    List<Duration> retryDelays = const [Duration.zero],
   }) =>
       HalvorFlutter.start(
         environment: Environment.live,
@@ -103,7 +107,7 @@ void main() {
         headers: () => {'authorization': 'Bearer session_1'},
         deviceName: 'test-device',
         onError: errors.add,
-        retryDelays: const [Duration.zero],
+        retryDelays: retryDelays,
         registrationRetryDelays: registrationRetryDelays,
         maxPendingEvents: maxPendingEvents,
         flushInterval: flushInterval,
@@ -306,6 +310,99 @@ void main() {
       expect((jsonDecode(registration.body) as Map)['adapter'], 'custom');
       expect(backend.deliveries.single.url.toString(), 'http://localhost:8787/v1/events');
       await halvor.close();
+    });
+  });
+
+  group('core review fixes', () {
+    test('resetIdentity during a retry wait leaves nothing on disk', () async {
+      // A short retry wait, so a delivery that outlives the reset would write within the test.
+      final halvor = await start(retryDelays: const [Duration(milliseconds: 200)]);
+      await untilReady(halvor);
+      backend.deliveryDown = true;
+      halvor.emit(_settled());
+      unawaited(halvor.flush());
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+
+      await halvor.resetIdentity().timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      expect(Directory('${dir.path}/spool').existsSync(), isFalse);
+      expect(store.values, isEmpty);
+    });
+
+    test('resetIdentity during a registration leaves no key behind', () async {
+      backend.registrationDelay = const Duration(milliseconds: 200);
+      final halvor = await start();
+      await halvor.resetIdentity().timeout(const Duration(seconds: 2));
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      expect(store.values, isEmpty);
+    });
+
+    test('events waiting for registration keep exactly their own context', () async {
+      backend.registrationFailures = 1;
+      const ambient = AgentContext(
+        agent: AgentRef(id: 'agt_wrong'),
+        owner: OwnerRef(id: 'own_wrong', type: OwnerType.business),
+      );
+      // Registration starts, and its retry timer runs, inside a zone with another context.
+      final halvor = await withAgentContext(ambient, () => start());
+      final bare = halvor.emit(_settled());
+      final partial = withAgentContext(
+        const AgentContext(agent: AgentRef(id: 'agt_mine')),
+        () => halvor.emit(_settled()),
+      );
+      await untilReady(halvor);
+      await halvor.flush();
+
+      final byId = {for (final e in backend.delivered) e.id: e.event};
+      expect(byId[bare]!['agent'], {'id': 'unattributed'});
+      expect((byId[partial]!['agent'] as Map)['id'], 'agt_mine');
+      expect((byId[partial]!['owner'] as Map)['id'], 'unattributed');
+      await halvor.close();
+    });
+
+    test('closing while registration is in flight still keeps the registered key', () async {
+      backend.registrationDelay = const Duration(milliseconds: 100);
+      final first = await start();
+      await first.close();
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      backend.registrationDelay = Duration.zero;
+      final second = await start();
+      expect(second.isReady, isTrue);
+      expect(backend.registrations, hasLength(1), reason: 'not registered a second time');
+      await second.close();
+    });
+
+    test('a debug endpoint given as a full /v1/events URL registers at /v1/sources', () async {
+      final halvor = await HalvorFlutter.start(
+        environment: Environment.test,
+        debugApiKey: _testKey,
+        debugEndpoint: 'http://localhost:8787/v1/events',
+        observeLifecycle: false,
+        keyStore: store,
+        dataDirectory: dir,
+        httpClient: backend.client,
+        debugBuild: true,
+      );
+      await untilReady(halvor);
+      expect(backend.registrations.single.url.toString(), 'http://localhost:8787/v1/sources');
+      await halvor.close();
+    });
+
+    test('URLs that carry the session headers must be https', () async {
+      final halvor = await HalvorFlutter.start(
+        environment: Environment.live,
+        provisionUrl: Uri.parse('http://app.example/halvor/sources'),
+        forwardUrl: _forwardUrl,
+        onError: errors.add,
+        observeLifecycle: false,
+        keyStore: store,
+        dataDirectory: dir,
+        httpClient: backend.client,
+      );
+      expect(halvor.enabled, isFalse);
+      expect(errors.single.message, contains('https'));
+      expect(backend.registrations, isEmpty);
     });
   });
 

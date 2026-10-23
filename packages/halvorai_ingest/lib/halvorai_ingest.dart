@@ -44,6 +44,7 @@ export 'src/transport.dart'
         IngestResult,
         SignedEnvelope,
         apiKeyEnvironment,
+        insecureUrlProblem,
         productionEndpoint,
         sandboxEndpoint;
 export 'src/validate.dart' show validateEvent;

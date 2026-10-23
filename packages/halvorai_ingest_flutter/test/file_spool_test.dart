@@ -72,4 +72,17 @@ void main() {
     expect((await spool.read(ids.single)).single.id, 'evt_new');
     expect(evicted, [1]);
   });
+
+  test('removes temp files a crash left behind, but not one being written', () async {
+    final spool = FileSpool(dir);
+    final stale = File('${dir.path}/.00000000000000001-deadbeef.jsonl.tmp')
+      ..writeAsStringSync('{}')
+      ..setLastModifiedSync(DateTime.now().subtract(const Duration(hours: 1)));
+    final fresh = File('${dir.path}/.00000000000000002-deadbeef.jsonl.tmp')
+      ..writeAsStringSync('{}');
+
+    await spool.list();
+    expect(stale.existsSync(), isFalse);
+    expect(fresh.existsSync(), isTrue);
+  });
 }

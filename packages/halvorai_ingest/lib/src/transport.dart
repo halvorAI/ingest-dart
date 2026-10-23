@@ -99,20 +99,44 @@ final _apiKeyPattern = RegExp(r'^hk_(test|live)_[0-9A-Za-z]{32}$');
 /// The environment a well-formed API key belongs to (`test` or `live`), or null.
 String? apiKeyEnvironment(String key) => _apiKeyPattern.firstMatch(key)?[1];
 
+/// Why [url] must not carry credentials, or null if it may: it has to be `https`, except for
+/// `http` to this machine (`localhost`, `*.localhost`, `127.0.0.0/8`, `::1`) during development.
+/// On an Android emulator, reach your machine with `adb reverse` and `http://localhost:<port>`.
+String? insecureUrlProblem(Uri url) {
+  if (url.scheme == 'https') return null;
+  final host = url.host.toLowerCase();
+  final loopback = host == 'localhost' ||
+      host.endsWith('.localhost') ||
+      host == '::1' ||
+      RegExp(r'^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(host);
+  if (url.scheme == 'http' && loopback) return null;
+  // Name the URL without its userinfo, query or fragment, which may hold credentials.
+  final shown =
+      Uri(scheme: url.scheme, host: url.host, port: url.hasPort ? url.port : null, path: url.path);
+  return '$shown must use https: it carries credentials (http is allowed only for localhost)';
+}
+
+Uri _secure(Uri url) {
+  final problem = insecureUrlProblem(url);
+  if (problem != null) throw ArgumentError(problem);
+  return url;
+}
+
 /// Posts straight to `POST {endpoint}/v1/events` with an `hk_` key. For servers, and for
 /// debug builds of an app; a shipped app should use [ForwardingTransport] instead.
 class HalvorApiTransport implements EventTransport {
   /// [endpoint] is a base URL and defaults to the sandbox for `hk_test_` keys and production
-  /// for `hk_live_` keys. A full `/v1/events` URL is accepted as is.
+  /// for `hk_live_` keys. A full `/v1/events` URL is accepted as is. Throws [ArgumentError] for
+  /// an endpoint that is not https (see [insecureUrlProblem]).
   HalvorApiTransport({
     required String apiKey,
     String? endpoint,
     http.Client? httpClient,
     Duration timeout = const Duration(seconds: 30),
   })  : _apiKey = apiKey,
-        _url = Uri.parse(eventsUrl(
+        _url = _secure(Uri.parse(eventsUrl(
           endpoint ?? (apiKeyEnvironment(apiKey) == 'live' ? productionEndpoint : sandboxEndpoint),
-        )),
+        ))),
         _http = httpClient ?? http.Client(),
         _ownsHttp = httpClient == null,
         _timeout = timeout;
@@ -145,13 +169,19 @@ class HalvorApiTransport implements EventTransport {
 ///
 /// The body is `{"events": [{"event": …, "sig": …}]}`. [headers] runs before every request,
 /// so it can return a fresh session token.
+///
+/// A 401 or 403 from your backend is retried, then spooled, not dropped: on a phone it usually
+/// means an expired session or a signed-out user, which a later attempt can get past. For a
+/// refusal that will never succeed, such as an event whose owner is not the signed-in user,
+/// answer 400 or 422. Throws [ArgumentError] for a [url] that is not https.
 class ForwardingTransport implements EventTransport {
   ForwardingTransport(
-    this.url, {
+    Uri url, {
     FutureOr<Map<String, String>> Function()? headers,
     http.Client? httpClient,
     Duration timeout = const Duration(seconds: 30),
-  })  : _headers = headers,
+  })  : url = _secure(url),
+        _headers = headers,
         _http = httpClient ?? http.Client(),
         _ownsHttp = httpClient == null,
         _timeout = timeout;
@@ -170,7 +200,7 @@ class ForwardingTransport implements EventTransport {
     } catch (e) {
       return DeliveryRetry('headers callback failed: $e');
     }
-    return postEnvelopes(_http, url, headers, envelopes, _timeout);
+    return postEnvelopes(_http, url, headers, envelopes, _timeout, retryAuthErrors: true);
   }
 
   @override
@@ -189,13 +219,16 @@ const _retryStatuses = {408, 429, 500, 502, 503, 504};
 const _fatalStatuses = {400, 401, 403, 422};
 
 /// Posts `{"events": [...]}` and classifies the response. Never throws.
+///
+/// With [retryAuthErrors], a 401 or 403 is worth retrying rather than fatal.
 Future<DeliveryOutcome> postEnvelopes(
   http.Client client,
   Uri url,
   Map<String, String> headers,
   List<SignedEnvelope> envelopes,
-  Duration timeout,
-) async {
+  Duration timeout, {
+  bool retryAuthErrors = false,
+}) async {
   final http.Response response;
   try {
     response = await client
@@ -218,6 +251,9 @@ Future<DeliveryOutcome> postEnvelopes(
   final status = response.statusCode;
   if (status == 413) return const DeliveryTooLarge();
   final error = _errorBody(response);
+  if (retryAuthErrors && (status == 401 || status == 403)) {
+    return DeliveryRetry(error?.message ?? 'HTTP $status', status: status, serverCode: error?.code);
+  }
   if (_fatalStatuses.contains(status)) {
     return DeliveryFatal(
       status,

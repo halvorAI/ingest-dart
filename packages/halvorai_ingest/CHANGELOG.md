@@ -11,6 +11,15 @@
 - Redaction of card numbers, CVCs, secret keys and private keys, including JSON evidence.
 - `newEventId` and `formatUtc` are public, for layers that stamp events before handing them over.
 - Tests run against ape-schema's shared conformance files (`tool/sync_conformance.sh`).
+- Redaction catches a card number with more digits next to it: a run is also redacted when some of its whole digit groups (4 or more digits each, split by spaces or dashes) form a card number. Long numbers written as one block, such as wei amounts, are left alone. Validation keeps the spec's whole-run rule.
+- A 3 or 4 digit CVC only: `cvc 12345` is no longer half redacted. Label keys that redact to the same text are numbered instead of overwritten.
+- `ForwardingTransport` retries and spools 401 and 403 instead of dropping the batch; the direct API transport still treats them as fatal.
+- Credential-carrying URLs must be https (`insecureUrlProblem`); http is allowed for loopback only.
+- The delivery loop never throws: a custom transport that throws is retried, and unexpected errors are reported.
+- A successful delivery replays the spool at once, not on the next emit.
+- `HalvorClient.discard()` stops delivery at once, cutting short a retry wait, without spooling. `flush()` after `discard()` returns at once, even if an event was being signed.
+- A malformed `endpoint` disables the client instead of throwing. Insecure-URL errors leave out userinfo and query.
+- After a replay finds the spool empty, successful batches no longer list the spool each time.
 
 Differences from the Node.js and Python SDKs, on purpose:
 - A spool entry the API refuses for good is removed instead of blocking later entries, and a single event that is too large is dropped, never spooled.
