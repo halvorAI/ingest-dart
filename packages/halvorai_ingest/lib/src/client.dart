@@ -202,7 +202,12 @@ class HalvorClient {
         _disable('environment ${environment.wire} does not match the $keyEnv api key');
       } else {
         _environment = environment ?? Environment.values.byName(keyEnv);
-        _transport = HalvorApiTransport(apiKey: apiKey, endpoint: endpoint);
+        try {
+          _transport = HalvorApiTransport(apiKey: apiKey, endpoint: endpoint);
+        } catch (e) {
+          // An insecure endpoint (ArgumentError) or one that is not a URL (FormatException).
+          _disable(e is ArgumentError ? '${e.message}' : 'endpoint is not a valid URL: $e');
+        }
       }
     }
     if (!_disabled && spool != null) {
@@ -232,6 +237,8 @@ class HalvorClient {
 
   bool _disabled = false;
   bool _closed = false;
+  bool _discarded = false;
+  final _discardSignal = Completer<void>();
   bool _configReported = false;
   bool _unconfirmedReported = false;
   String? _configMessage;
@@ -239,6 +246,10 @@ class HalvorClient {
   Future<void>? _draining;
   bool _rerun = false;
   bool _replayRequested = false;
+
+  /// Whether the spool may hold entries. Unknown at start; cleared when a replay finds it empty,
+  /// so a healthy connection doesn't list the spool after every batch.
+  bool _spoolMayHaveData = true;
   DateTime _spoolCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// False when the configuration was rejected; every emit is then counted and dropped.
@@ -317,10 +328,12 @@ class HalvorClient {
       _spoolCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
       _replayRequested = true;
     }
+    // Stops when nothing is queued, and also once discarded or disabled: then the drain loop
+    // sends nothing, and waiting for the queue to empty would spin forever.
     Future<void> drain() async {
       do {
         await _kick();
-      } while (_raw.isNotEmpty || _ready.isNotEmpty);
+      } while (!_discarded && !_disabled && (_raw.isNotEmpty || _ready.isNotEmpty));
     }
 
     if (timeout == null) {
@@ -336,6 +349,23 @@ class HalvorClient {
     _closed = true;
     _timer?.cancel();
     _timer = null;
+  }
+
+  /// Stops at once and throws away everything not yet delivered, including a batch waiting to
+  /// be retried. Nothing more is sent or written to the spool. For when a user's data must be
+  /// forgotten; spooled batches already on disk are the caller's to delete.
+  ///
+  /// Completes once the delivery loop has stopped, so no write to the spool is still under way.
+  /// A retry wait is cut short; a request already sent still finishes, unless its HTTP client is
+  /// closed first.
+  Future<void> discard() async {
+    _discarded = true;
+    if (!_discardSignal.isCompleted) _discardSignal.complete();
+    dispose();
+    _raw.clear();
+    _ready.clear();
+    _transport?.close();
+    await _draining;
   }
 
   /// Refuses new events and sends what is queued. Spooled batches stay for the next start.
@@ -375,21 +405,32 @@ class HalvorClient {
     return drain;
   }
 
+  /// Never throws: it runs from timers, where an error would be unhandled.
   Future<void> _drainLoop() async {
-    do {
-      _rerun = false;
-      if (_replayRequested) {
-        _replayRequested = false;
-        await _replaySpool();
-      }
-      await _prepareReady();
-      while (_ready.isNotEmpty) {
-        final batch = _ready.sublist(0, min(_batchSize, _ready.length));
-        _ready.removeRange(0, batch.length);
-        await _deliverFresh(batch);
+    try {
+      do {
+        _rerun = false;
+        if (_replayRequested) {
+          _replayRequested = false;
+          await _replaySpool();
+        }
         await _prepareReady();
-      }
-    } while (_rerun || _raw.isNotEmpty);
+        while (_ready.isNotEmpty && !_discarded) {
+          final batch = _ready.sublist(0, min(_batchSize, _ready.length));
+          _ready.removeRange(0, batch.length);
+          try {
+            await _deliverFresh(batch);
+          } catch (e) {
+            _counters.dropped += batch.length;
+            _report(SdkError(SdkErrorCode.deliveryFailed, 'delivery failed: $e'));
+          }
+          await _prepareReady();
+        }
+        // A replay requested by a delivery that just succeeded runs now, not on the next emit.
+      } while (!_discarded && (_rerun || _raw.isNotEmpty || _replayRequested));
+    } catch (e) {
+      _report(SdkError(SdkErrorCode.deliveryFailed, 'delivery loop failed: $e'));
+    }
   }
 
   // -------------------------------------------------------------------------------------------
@@ -401,6 +442,8 @@ class HalvorClient {
     _raw.clear();
     for (final item in pending) {
       final envelope = await _prepare(item);
+      // discard() may have run while this event was being signed: drop it, don't queue it.
+      if (_discarded) return;
       if (envelope != null) _ready.add(envelope);
     }
   }
@@ -510,11 +553,16 @@ class HalvorClient {
     // Keys as well as values. Identifiers (ids, rail refs) are left alone: numeric network ids
     // pass the Luhn check often enough that redacting them would corrupt real events.
     if (event['labels'] case final Map<Object?, Object?> labels) {
-      event['labels'] = {
-        for (final e in labels.entries)
-          (e.key is String ? clean(e.key as String) : e.key):
-              redactDeep(e.value, extraPatterns: _redactPatterns),
-      };
+      final redacted = <Object?, Object?>{};
+      for (final e in labels.entries) {
+        var key = e.key is String ? clean(e.key as String) : e.key;
+        // Two keys that redact to the same text would overwrite each other; number the rest.
+        for (var n = 2; redacted.containsKey(key); n++) {
+          key = '${e.key is String ? clean(e.key as String) : e.key}#$n';
+        }
+        redacted[key] = redactDeep(e.value, extraPatterns: _redactPatterns);
+      }
+      event['labels'] = redacted;
     }
     final evidence = event['evidence'];
     if (evidence is List) {
@@ -533,15 +581,19 @@ class HalvorClient {
 
   Future<void> _deliverFresh(List<SignedEnvelope> batch) async {
     final left = await _send(batch);
+    if (_discarded) return;
     if (left.isEmpty) {
       // The API is reachable again; give anything spooled earlier a go.
-      if (_spool != null && DateTime.now().isAfter(_spoolCooldownUntil)) _replayRequested = true;
+      if (_spool != null && _spoolMayHaveData && DateTime.now().isAfter(_spoolCooldownUntil)) {
+        _replayRequested = true;
+      }
       return;
     }
     final spool = _spool;
     if (spool != null) {
       try {
         await spool.write(left);
+        _spoolMayHaveData = true;
         _counters.spooled += left.length;
         return;
       } catch (e) {
@@ -559,7 +611,14 @@ class HalvorClient {
     final transport = _transport;
     if (batch.isEmpty || transport == null) return const [];
     for (var attempt = 0;; attempt++) {
-      final outcome = await transport.send(batch);
+      DeliveryOutcome outcome;
+      try {
+        outcome = await transport.send(batch);
+      } catch (e) {
+        // EventTransport is public, and a custom one may throw despite its contract.
+        outcome = DeliveryRetry('transport failed: $e');
+      }
+      if (_discarded) return const [];
       switch (outcome) {
         case DeliveryOk(perEvent: false):
           _counters.accepted += batch.length;
@@ -595,7 +654,11 @@ class HalvorClient {
         case DeliveryRetry():
           if (attempt >= _retryDelays.length) return batch;
           _counters.retries += 1;
-          await Future<void>.delayed(_jitter(_retryDelays[attempt]));
+          await Future.any([
+            Future<void>.delayed(_jitter(_retryDelays[attempt])),
+            _discardSignal.future,
+          ]);
+          if (_discarded) return const [];
       }
     }
   }
@@ -640,7 +703,8 @@ class HalvorClient {
   /// cannot block the ones behind it; only a retryable failure stops the replay.
   Future<void> _replaySpool() async {
     final spool = _spool;
-    if (spool == null || _disabled || DateTime.now().isBefore(_spoolCooldownUntil)) return;
+    if (spool == null || _disabled || _discarded) return;
+    if (DateTime.now().isBefore(_spoolCooldownUntil)) return;
     final List<String> ids;
     try {
       ids = await spool.list();
@@ -648,10 +712,12 @@ class HalvorClient {
       _report(SdkError(SdkErrorCode.spool, 'spool list failed: $e'));
       return;
     }
+    if (ids.isEmpty) _spoolMayHaveData = false;
     for (final id in ids) {
       try {
         final envelopes = await spool.read(id);
         final left = await _send(envelopes);
+        if (_discarded) return;
         _counters.replayed += envelopes.length - left.length;
         if (left.isEmpty) {
           await spool.remove(id);
@@ -666,6 +732,8 @@ class HalvorClient {
         return;
       }
     }
+    // Every entry was delivered or settled.
+    _spoolMayHaveData = false;
   }
 
   Duration _jitter(Duration base) =>

@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:halvorai_ingest/halvorai_ingest.dart';
 import 'package:http/http.dart' as http;
@@ -59,6 +61,30 @@ http.Response _acceptAll(http.Request request) {
 }
 
 DeliveryOutcome _down(List<SignedEnvelope> _) => const DeliveryRetry('503', status: 503);
+
+class _CountingSpool extends MemorySpool {
+  var lists = 0;
+
+  @override
+  Future<List<String>> list() {
+    lists++;
+    return super.list();
+  }
+}
+
+class _ThrowingSpool implements Spool {
+  @override
+  Future<void> write(List<SignedEnvelope> envelopes) async =>
+      throw const FileSystemException('disk full');
+  @override
+  Future<List<String>> list() async => const [];
+  @override
+  Future<List<SignedEnvelope>> read(String id) async => const [];
+  @override
+  Future<void> replace(String id, List<SignedEnvelope> remaining) async {}
+  @override
+  Future<void> remove(String id) async {}
+}
 
 void main() {
   late SourceKey key;
@@ -547,6 +573,243 @@ void main() {
       await halvor.flush();
       expect(halvor.stats().accepted, 1);
       expect(halvor.stats().unconfirmed, 0);
+    });
+  });
+
+  group('core review fixes', () {
+    test('label keys that redact to the same text are numbered, not overwritten', () async {
+      final halvor = offline();
+      halvor.emitJson({
+        ..._settled().toJson(),
+        'labels': {'4111111111111111': 'a', '4242424242424242': 'b'},
+      });
+      await halvor.flush();
+      expect(sent.single.event['labels'], {'[redacted:pan]': 'a', '[redacted:pan]#2': 'b'});
+    });
+
+    test('a 401 from a forwarding backend is retried and spooled, not dropped', () async {
+      final spool = MemorySpool();
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: ForwardingTransport(
+          Uri.parse('https://app.example/e'),
+          httpClient: MockClient((_) async => http.Response('session expired', 401)),
+        ),
+        spool: spool,
+        onError: errors.add,
+        retryDelays: _fast,
+      );
+      halvor.emit(_settled());
+      await halvor.flush(replaySpool: false);
+      expect(halvor.stats().dropped, 0);
+      expect(halvor.stats().retries, 2);
+      expect(spool.length, 1);
+    });
+
+    test('a 401 while replaying the spool keeps the entry', () async {
+      final spool = MemorySpool();
+      await spool.write([
+        SignedEnvelope({'id': 'evt_spooled_0001'}, 'sig')
+      ]);
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: ForwardingTransport(
+          Uri.parse('https://app.example/e'),
+          httpClient: MockClient((_) async => http.Response('', 403)),
+        ),
+        spool: spool,
+        retryDelays: _fast,
+      );
+      await halvor.flush();
+      expect(spool.length, 1);
+      expect(halvor.stats().dropped, 0);
+    });
+
+    test('a direct API key still treats 401 as fatal', () async {
+      final halvor = HalvorClient(
+        sourceKey: key,
+        transport: HalvorApiTransport(
+          apiKey: 'hk_test_${'a' * 32}',
+          httpClient: MockClient((_) async => http.Response('', 401)),
+        ),
+        environment: Environment.test,
+        onError: errors.add,
+        retryDelays: _fast,
+      );
+      halvor.emit(_settled());
+      await halvor.flush();
+      expect(halvor.stats().dropped, 1);
+      expect(halvor.stats().retries, 0);
+    });
+
+    test('a custom transport that throws is retried and spooled, with no unhandled error',
+        () async {
+      final unhandled = <Object>[];
+      final spool = MemorySpool();
+      await runZonedGuarded(() async {
+        final halvor = HalvorClient(
+          sourceKey: key,
+          environment: Environment.test,
+          transport: ScriptedTransport([(_) => throw StateError('boom')]),
+          spool: spool,
+          onError: errors.add,
+          retryDelays: _fast,
+          flushInterval: const Duration(milliseconds: 5),
+        );
+        halvor.emit(_settled());
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        await halvor.flush(replaySpool: false);
+      }, (e, _) => unhandled.add(e));
+      expect(unhandled, isEmpty);
+      expect(spool.length, 1);
+    });
+
+    test('a spool that throws is reported and the batch counted as dropped', () async {
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: ScriptedTransport([_down]),
+        spool: _ThrowingSpool(),
+        onError: errors.add,
+        retryDelays: _fast,
+      );
+      halvor.emit(_settled());
+      await halvor.flush(replaySpool: false);
+      expect(halvor.stats().dropped, 1);
+      expect(errors.map((e) => e.code), contains(SdkErrorCode.spool));
+    });
+
+    test('a delivery that succeeds replays the spool right away', () async {
+      final spool = MemorySpool();
+      await spool.write([
+        SignedEnvelope({'id': 'evt_spooled_0001'}, 'sig')
+      ]);
+      // The replay at start fails; the next delivery succeeds.
+      final transport = ScriptedTransport([_down, _down, _ok]);
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: transport,
+        spool: spool,
+        retryDelays: const [Duration.zero],
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(spool.length, 1);
+
+      halvor.emit(_settled());
+      await halvor.flush(replaySpool: false);
+      expect(spool.length, 0, reason: 'not left waiting for the next emit');
+    });
+
+    test('discard stops a batch in retry wait without spooling it', () async {
+      final spool = MemorySpool();
+      final transport = ScriptedTransport([_down]);
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: transport,
+        spool: spool,
+        retryDelays: const [Duration(seconds: 30)],
+      );
+      halvor.emit(_settled());
+      unawaited(halvor.flush());
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(transport.batches, hasLength(1), reason: 'now waiting to retry');
+
+      await halvor.discard().timeout(const Duration(seconds: 2));
+      expect(transport.batches, hasLength(1));
+      expect(spool.length, 0);
+      expect(halvor.emit(_settled()), startsWith('evt_'));
+    });
+  });
+
+  group('second review fixes', () {
+    test('flush returns after discard, even when an event was being signed', () async {
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: ScriptedTransport([_ok]),
+      );
+      halvor.emit(_settled());
+      unawaited(halvor.flush());
+      await halvor.discard();
+      expect(await halvor.flush().timeout(const Duration(seconds: 2)), isTrue);
+      expect(halvor.stats().queued, 0);
+    });
+
+    test('a malformed endpoint disables the client instead of throwing', () {
+      late HalvorClient halvor;
+      expect(
+        () => halvor = HalvorClient(
+          sourceKey: key,
+          apiKey: 'hk_test_${'a' * 32}',
+          endpoint: 'http://[not a url',
+          onError: errors.add,
+        ),
+        returnsNormally,
+      );
+      expect(halvor.enabled, isFalse);
+      expect(errors.single.code, SdkErrorCode.config);
+    });
+
+    test('the insecure-URL message leaves out userinfo and query', () {
+      final message = insecureUrlProblem(Uri.parse('http://user:secret@api.example/p?token=abc'))!;
+      expect(message, contains('http://api.example/p'));
+      expect(message, isNot(contains('secret')));
+      expect(message, isNot(contains('abc')));
+    });
+
+    test('once the spool is known to be empty, batches stop listing it', () async {
+      final spool = _CountingSpool();
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: ScriptedTransport([_ok]),
+        spool: spool,
+      );
+      for (var i = 0; i < 5; i++) {
+        halvor.emit(_settled());
+        await halvor.flush(replaySpool: false);
+      }
+      expect(spool.lists, lessThanOrEqualTo(1));
+    });
+  });
+
+  group('https', () {
+    test('only https, or http to this machine, may carry credentials', () {
+      for (final ok in [
+        'https://api.example',
+        'http://localhost:8787',
+        'http://127.0.0.1:1',
+        'http://[::1]:8080',
+        'http://app.localhost'
+      ]) {
+        expect(insecureUrlProblem(Uri.parse(ok)), isNull, reason: ok);
+      }
+      for (final bad in [
+        'http://api.example',
+        'http://10.0.2.2:8787',
+        'ftp://x.example',
+        'http://localhost.example.com'
+      ]) {
+        expect(insecureUrlProblem(Uri.parse(bad)), isNotNull, reason: bad);
+      }
+    });
+
+    test('transports refuse an insecure URL, and the client disables instead of throwing', () {
+      expect(() => ForwardingTransport(Uri.parse('http://app.example/e')), throwsArgumentError);
+      expect(() => HalvorApiTransport(apiKey: 'hk_test_${'a' * 32}', endpoint: 'http://x.example'),
+          throwsArgumentError);
+      final halvor = HalvorClient(
+        sourceKey: key,
+        apiKey: 'hk_test_${'a' * 32}',
+        endpoint: 'http://api.example',
+        onError: errors.add,
+      );
+      expect(halvor.enabled, isFalse);
+      expect(errors.single.message, contains('https'));
     });
   });
 

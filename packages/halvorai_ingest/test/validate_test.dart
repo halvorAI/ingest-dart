@@ -1,10 +1,12 @@
 // Tests mutate decoded JSON in place, where dynamic access is the point.
 // ignore_for_file: avoid_dynamic_calls
 
+// Which events are valid is decided by the shared cases in conformance_test.dart. These tests
+// cover what the cases cannot: the messages, and Dart-specific details.
+
 import 'dart:convert';
 
 import 'package:halvorai_ingest/halvorai_ingest.dart';
-import 'package:halvorai_ingest/src/ids.dart';
 import 'package:halvorai_ingest/src/time.dart';
 import 'package:test/test.dart';
 
@@ -34,81 +36,26 @@ Map<String, Object?> _mutate(void Function(Map<String, dynamic> e) change) {
 }
 
 void main() {
-  test('a valid event has no problems', () {
-    expect(validateEvent(validEvent()), isEmpty);
-  });
-
-  // The same cases the Python SDK checks, plus the strictness rules from the zod model.
-  final rejects = <String, (void Function(Map<String, dynamic>), String)>{
-    'failed without a reason': ((e) => e['payment']['status'] = 'failed', 'failure_reason'),
-    'no rail_ref': ((e) => (e['payment'] as Map).remove('rail_ref'), 'rail_ref'),
-    'payee with no name, wallet or id': ((e) => (e['payee'] as Map).remove('name'), 'payee'),
-    'decimal amount': ((e) => e['payment']['amount']['value'] = '41.20', 'value'),
-    'unknown type': ((e) => e['type'] = 'payment.approved', 'type'),
-    'unknown key': ((e) => e['extra'] = 1, 'unrecognized key "extra"'),
-    'null optional field': ((e) => e['instruction'] = null, 'instruction'),
-    'wrong rail ref key': ((e) => e['payment']['rail_ref'] = {'nonce': 'n'}, 'nonce'),
-    'lower-case currency': ((e) => e['payment']['amount']['currency'] = 'usd', 'currency'),
-    'date without offset': ((e) => e['occurred_at'] = '2026-10-17T09:14:03', 'occurred_at'),
-    'impossible date': ((e) => e['occurred_at'] = '2026-02-30T00:00:00Z', 'occurred_at'),
-    'short id': ((e) => e['id'] = 'evt_1', 'id'),
-    'atomic amount without asset': (
-      (e) => e['payment']['amount'] = {'value': '1', 'unit': 'atomic'},
-      'asset'
-    ),
-    'evidence with value and uri': (
-      (e) => e['evidence'] = [
-            {
-              'kind': 'stripe.object',
-              'format': 'json',
-              'value': <String, Object?>{},
-              'uri': 'https://x.test/a',
-              'sha256': 'sha256:${'0' * 64}',
-            }
-          ],
-      'exactly one of value or uri'
-    ),
-    'too many labels': ((e) => e['labels'] = {for (var i = 0; i < 21; i++) 'k$i': 'v'}, 'labels'),
-    'card number in free text': (
-      (e) => e['payee']['name'] = 'Pay 4242 4242 4242 4242',
-      'pan_detected'
-    ),
-  };
-
-  rejects.addAll({
-    'card number in payee.website': (
-      (e) => e['payee']['website'] = 'https://x.test/?c=4242424242424242',
-      'payee.website: pan_detected'
-    ),
-    'card number in payee.resource_url': (
-      (e) => e['payee']['resource_url'] = 'https://x.test/4242424242424242',
-      'payee.resource_url: pan_detected'
-    ),
-    'card number in a label key': (
-      (e) => e['labels'] = {'4242424242424242': 'v'},
-      'labels: pan_detected in a key'
-    ),
+  test('problems name the path and say what is wrong', () {
+    expect(validateEvent(_mutate((e) => e['extra'] = 1)), ['(root): unrecognized key "extra"']);
+    expect(
+      validateEvent(_mutate((e) => e['payment']['status'] = 'failed')),
+      ['payment.failure_reason: is required when status is failed'],
+    );
+    expect(
+      validateEvent(_mutate((e) => e['payment']['amount']['value'] = '41.20')),
+      ['payment.amount.value: must be a decimal integer string'],
+    );
+    expect(
+      validateEvent(_mutate((e) => e['instruction'] = null)),
+      ['instruction: expected object, received null'],
+    );
   });
 
   test('a card number in a label key is not echoed in the error', () {
     final problems = validateEvent(_mutate((e) => e['labels'] = {'4242424242424242': 'v'}));
-    expect(problems.join(), isNot(contains('4242')));
+    expect(problems, ['labels: pan_detected in a key']);
   });
-
-  test('identifiers are not checked for card numbers', () {
-    final event = _mutate((e) {
-      e['payment']['rail'] = 'card';
-      e['payment']['rail_ref'] = {'network_transaction_id': '4242424242424242'};
-    });
-    expect(validateEvent(event), isEmpty);
-  });
-
-  for (final MapEntry(key: name, value: (change, where)) in rejects.entries) {
-    test('rejects $name', () {
-      final problems = validateEvent(_mutate(change));
-      expect(problems.join('\n'), contains(where));
-    });
-  }
 
   test('accepts every rail with its own refs', () {
     final refs = {
