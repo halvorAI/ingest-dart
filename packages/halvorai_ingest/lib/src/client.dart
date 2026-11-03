@@ -34,7 +34,14 @@ enum SdkErrorCode {
 
 /// Something the client could not do. Delivered to `onError`; the client never throws.
 class SdkError {
-  const SdkError(this.code, this.message, {this.eventId, this.serverCode, this.details});
+  const SdkError(
+    this.code,
+    this.message, {
+    this.eventId,
+    this.serverCode,
+    this.details,
+    this.requestId,
+  });
 
   final SdkErrorCode code;
   final String message;
@@ -43,6 +50,9 @@ class SdkError {
   /// The API's error code (`unknown_source`, `invalid_signature`, …) when it sent one.
   final String? serverCode;
   final List<Object?>? details;
+
+  /// The API's request id, to quote to support.
+  final String? requestId;
 
   @override
   String toString() => [
@@ -60,7 +70,6 @@ class ClientStats {
     this.queued = 0,
     this.accepted = 0,
     this.duplicates = 0,
-    this.unconfirmed = 0,
     this.rejected = 0,
     this.dropped = 0,
     this.droppedInvalid = 0,
@@ -76,13 +85,10 @@ class ClientStats {
   /// Waiting in memory to be sent.
   final int queued;
 
-  /// Confirmed by the API (or handed to a sink).
+  /// Accepted by the API, or handed to a sink. An event a 2xx response has no result for counts
+  /// here too, as docs/SDK.md §5 says.
   final int accepted;
   final int duplicates;
-
-  /// Delivered with a 2xx, but the response had no result for them, so whether the API kept
-  /// them is unknown. Usually a forwarding backend that does not pass the response through.
-  final int unconfirmed;
 
   /// Refused by the API, one by one.
   final int rejected;
@@ -103,7 +109,6 @@ class _Counters {
   int emitted = 0;
   int accepted = 0;
   int duplicates = 0;
-  int unconfirmed = 0;
   int rejected = 0;
   int dropped = 0;
   int droppedInvalid = 0;
@@ -119,6 +124,9 @@ class _Counters {
 typedef EnvelopeSink = FutureOr<void> Function(List<SignedEnvelope> envelopes);
 
 typedef ErrorHandler = void Function(SdkError error);
+
+/// JSON evidence that carries a signature over its own fields, so redaction would break it.
+const _signedJsonEvidence = {'x402.payment_payload'};
 
 /// Backoff between delivery attempts; each delay gets up to 20 % jitter.
 const defaultRetryDelays = [
@@ -240,7 +248,7 @@ class HalvorClient {
   bool _discarded = false;
   final _discardSignal = Completer<void>();
   bool _configReported = false;
-  bool _unconfirmedReported = false;
+  bool _missingResultsReported = false;
   String? _configMessage;
   Timer? _timer;
   Future<void>? _draining;
@@ -260,7 +268,6 @@ class HalvorClient {
         queued: _raw.length + _ready.length,
         accepted: _counters.accepted,
         duplicates: _counters.duplicates,
-        unconfirmed: _counters.unconfirmed,
         rejected: _counters.rejected,
         dropped: _counters.dropped,
         droppedInvalid: _counters.droppedInvalid,
@@ -304,7 +311,10 @@ class HalvorClient {
       }
       final given = event['id'];
       if (given is String) id = given;
-      _raw.add(_Pending(id, _copy(event) as Map<String, Object?>, currentContext()));
+      final copy = _copy(event) as Map<String, Object?>;
+      // The payment happened now, not when the background drain builds the batch (docs/SDK.md §2).
+      if (copy['occurred_at'] is! String) copy['occurred_at'] = nowUtc();
+      _raw.add(_Pending(id, copy, currentContext()));
       if (_raw.length + _ready.length >= _batchSize) {
         _zone.run(() => Timer.run(_kick));
       } else {
@@ -450,19 +460,6 @@ class HalvorClient {
 
   Future<SignedEnvelope?> _prepare(_Pending pending) async {
     try {
-      // A client belongs to one environment (its key, or its configuration). An event that says
-      // otherwise is a bug, so drop it rather than relabel it or send it to be refused.
-      final environment = pending.input['environment'];
-      if (environment != null && environment != _environment!.wire) {
-        _counters.droppedInvalid += 1;
-        _report(SdkError(
-          SdkErrorCode.invalidEvent,
-          'event environment does not match the client',
-          eventId: pending.id,
-          details: ['environment: must be "${_environment!.wire}", the client\'s environment'],
-        ));
-        return null;
-      }
       final event = _build(pending);
       _redact(event);
       final problems = validateEvent(event);
@@ -487,9 +484,8 @@ class HalvorClient {
   Map<String, Object?> _build(_Pending pending) {
     final input = pending.input;
     final ctx = pending.context;
-    final instruction = _instruction(
-      input.containsKey('instruction') ? input['instruction'] : ctx?.instruction?.toJson(),
-    );
+    // A null field is left out: an optional field is absent, never null (docs/SDK.md §2).
+    final instruction = _instruction(input['instruction'] ?? ctx?.instruction?.toJson());
     final adapter = switch (input['source']) {
       {'adapter': final String adapter} => adapter,
       _ => 'custom',
@@ -498,8 +494,9 @@ class HalvorClient {
       'ape_version': '0.1',
       'id': pending.id,
       'type': input['type'],
-      'occurred_at': input['occurred_at'] is String ? input['occurred_at'] : nowUtc(),
-      'environment': _environment!.wire,
+      'occurred_at': input['occurred_at'],
+      // As docs/SDK.md §2: the event's own, else the client's. HalvorAI rejects a mismatch.
+      'environment': input['environment'] ?? _environment!.wire,
       // id and sdk always come from the client, so an input cannot sign as another source.
       'source': {'id': _key.kid, 'sdk': sdkName, 'adapter': adapter},
       'agent': input['agent'] ?? ctx?.agent?.toJson() ?? {'id': 'unattributed'},
@@ -508,7 +505,7 @@ class HalvorClient {
       'payee': input['payee'],
       if (instruction != null) 'instruction': instruction,
       for (final key in const ['instrument', 'evidence', 'related', 'labels'])
-        if (input.containsKey(key)) key: input[key],
+        if (input[key] != null) key: input[key],
     };
   }
 
@@ -567,6 +564,8 @@ class HalvorClient {
     final evidence = event['evidence'];
     if (evidence is List) {
       for (final item in evidence) {
+        // A signed x402 payload is evidence only while byte-identical, and holds no card number.
+        if (item is Map && _signedJsonEvidence.contains(item['kind'])) continue;
         if (item is Map && item['format'] == 'json' && item['value'] != null) {
           final value = redactDeep(item['value'], extraPatterns: _redactPatterns)!;
           item['value'] = value;
@@ -640,7 +639,13 @@ class HalvorClient {
           }
           final mid = (batch.length + 1) ~/ 2;
           return [...await _send(batch.sublist(0, mid)), ...await _send(batch.sublist(mid))];
-        case DeliveryFatal(:final status, :final message, :final serverCode, :final details):
+        case DeliveryFatal(
+            :final status,
+            :final message,
+            :final serverCode,
+            :final details,
+            :final requestId
+          ):
           _counters.dropped += batch.length;
           _report(SdkError(
             status == 401 || status == 403
@@ -649,7 +654,9 @@ class HalvorClient {
             message,
             serverCode: serverCode,
             details: details,
+            requestId: requestId,
           ));
+          await _deadLetter(batch);
           return const [];
         case DeliveryRetry():
           if (attempt >= _retryDelays.length) return batch;
@@ -663,6 +670,18 @@ class HalvorClient {
     }
   }
 
+  /// Keeps a batch the API will never accept in the spool's dead letters, never replayed, so it
+  /// can be inspected (docs/SDK.md §6). Without a spool it is only counted and reported.
+  Future<void> _deadLetter(List<SignedEnvelope> batch) async {
+    final spool = _spool;
+    if (spool == null || _discarded) return;
+    try {
+      await spool.writeDead(batch);
+    } catch (e) {
+      _report(SdkError(SdkErrorCode.spool, 'dead-letter write failed: $e'));
+    }
+  }
+
   void _applyResults(List<SignedEnvelope> batch, List<IngestResult> results) {
     final byId = {for (final r in results) r.id: r};
     var missing = 0;
@@ -670,9 +689,9 @@ class HalvorClient {
       final result = byId[envelope.id];
       switch (result?.status) {
         case null:
-          // Not retried: a backend that never passes results through would loop forever, and a
-          // retry of a delivered event is only a duplicate anyway.
+          // Counted as accepted (docs/SDK.md §5); HalvorAI itself always answers per event.
           missing += 1;
+          _counters.accepted += 1;
         case 'duplicate':
           _counters.duplicates += 1;
         case 'rejected':
@@ -687,11 +706,10 @@ class HalvorClient {
           _counters.accepted += 1;
       }
     }
-    if (missing == 0) return;
-    _counters.unconfirmed += missing;
-    if (_unconfirmedReported) return;
-    _unconfirmedReported = true;
-    // A `config` error, once: it almost always means the destination is set up wrong.
+    if (missing == 0 || _missingResultsReported) return;
+    _missingResultsReported = true;
+    // A `config` error, once: HalvorAI answers every event, so a missing result almost always
+    // means a forwarding backend that does not pass the response through.
     _report(SdkError(
       SdkErrorCode.config,
       'the response had no result for $missing event(s); a forwarding backend must return '

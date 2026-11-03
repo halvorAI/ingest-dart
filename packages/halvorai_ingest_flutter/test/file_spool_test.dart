@@ -85,4 +85,24 @@ void main() {
     expect(stale.existsSync(), isFalse);
     expect(fresh.existsSync(), isTrue);
   });
+
+  test('names files in the format every HalvorAI SDK shares', () async {
+    final spool = FileSpool(dir, clock: () => DateTime.fromMillisecondsSinceEpoch(1761900000123));
+    await spool.write([_envelope('evt_1')]);
+    final id = (await spool.list()).single;
+    expect(id, matches(RegExp(r'^halvor-spool-001761900000123-[0-9a-f]{8}\.jsonl$')));
+  });
+
+  test('dead letters go to dead/ and are never listed for replay', () async {
+    final spool = FileSpool(dir);
+    await spool.writeDead([_envelope('evt_refused')]);
+    await spool.write([_envelope('evt_waiting')]);
+
+    final ids = await spool.list();
+    expect(ids, hasLength(1));
+    expect((await spool.read(ids.single)).single.id, 'evt_waiting');
+    final dead = Directory('${dir.path}/dead').listSync().whereType<File>().toList();
+    expect(dead, hasLength(1));
+    expect(dead.single.readAsStringSync(), contains('evt_refused'));
+  });
 }

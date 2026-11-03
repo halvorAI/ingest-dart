@@ -61,7 +61,7 @@ Wrap the agent's own task in `withAgentContext`: the context follows `await`s in
 
 **Forwarding** (`forwardUrl`)
 - Request: `POST` with body `{"events": [{"event": {…}, "sig": "…"}]}` and the headers from `headers`.
-- Response: HalvorAI's response, status and body unchanged. Events missing from its `results` count as `unconfirmed`.
+- Response: HalvorAI's response, status and body unchanged. The Node.js (`@halvorai/ingest/device`) and Python (`halvorai_ingest.device`) SDKs provide both routes.
 
 ## What it handles
 
@@ -69,7 +69,7 @@ Wrap the agent's own task in `withAgentContext`: the context follows `await`s in
 | --- | --- |
 | Key storage | iOS Keychain, readable after first unlock (so a background flush can sign), this device only: never in iCloud Keychain or a backup restored to another phone. Android Keystore-backed encryption; if a stored key can't be decrypted, a new one is registered. |
 | Reinstalls | iOS keeps Keychain items when an app is deleted. A marker in the app's data directory spots a fresh install, and the old key (possibly another user's) is replaced. |
-| Offline | Batches that run out of retries are kept on disk (JSON lines, written atomically), at most 5 MB and 7 days, oldest dropped first and reported as `spool` errors. They are re-sent on the next start, flush or return to the foreground. HalvorAI drops duplicates for good, so a re-send is never counted twice. |
+| Offline | Batches that run out of retries are kept on disk (JSON lines, written atomically), at most 5 MB and 7 days (the shared default is 50 MB; a phone gets less), oldest dropped first and reported as `spool` errors. They are re-sent on the next start, flush or return to the foreground; HalvorAI drops duplicates for good, so a re-send is never counted twice. Batches HalvorAI refuses for good go to `dead/` instead and are never re-sent. |
 | Lifecycle | Going to the background sends the queue (3-second budget); coming back retries registration and spooled batches. Otherwise batches go out every 5 seconds or at 100 events. |
 | Expired sessions | A 401 or 403 from your backend is retried, then kept on disk, never dropped. Answer 400 or 422 for refusals that will never succeed, such as an event whose owner isn't the signed-in user. |
 | Account deletion | `resetIdentity()` forgets the key and the spool. Delivery is stopped rather than drained, so nothing signed with the old key is sent or written to disk afterwards. The next `start` registers a new key. |

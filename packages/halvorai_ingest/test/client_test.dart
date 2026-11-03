@@ -74,6 +74,9 @@ class _CountingSpool extends MemorySpool {
 
 class _ThrowingSpool implements Spool {
   @override
+  Future<void> writeDead(List<SignedEnvelope> envelopes) async =>
+      throw const FileSystemException('disk full');
+  @override
   Future<void> write(List<SignedEnvelope> envelopes) async =>
       throw const FileSystemException('disk full');
   @override
@@ -499,13 +502,13 @@ void main() {
   });
 
   group('environment', () {
-    test("an event can't claim a different environment than the client", () async {
+    test("an event's own environment is kept, as docs/SDK.md says", () async {
+      // HalvorAI rejects a mismatch per event; the SDK does not second-guess it.
       final halvor = offline();
       halvor.emitJson({..._settled().toJson(), 'environment': 'live'});
       await halvor.flush();
-      expect(sent, isEmpty);
-      expect(halvor.stats().droppedInvalid, 1);
-      expect(errors.single.details!.single, contains('environment'));
+      expect(sent.single.event['environment'], 'live');
+      expect(errors, isEmpty);
     });
 
     test("an event repeating the client's environment is fine", () async {
@@ -525,7 +528,7 @@ void main() {
           retryDelays: _fast,
         );
 
-    test('events missing from the response are unconfirmed, not accepted or retried', () async {
+    test('events missing from the response count as accepted, not retried, warned once', () async {
       var calls = 0;
       final halvor = forwarding(MockClient((_) async {
         calls++;
@@ -539,13 +542,12 @@ void main() {
       await halvor.flush();
 
       expect(calls, 2, reason: 'no retries');
-      expect(halvor.stats().accepted, 0);
-      expect(halvor.stats().unconfirmed, 3);
+      expect(halvor.stats().accepted, 3, reason: 'docs/SDK.md §5');
       expect(errors.where((e) => e.code == SdkErrorCode.config), hasLength(1),
           reason: 'reported once');
     });
 
-    test('an empty 2xx body counts as unconfirmed instead of looping', () async {
+    test('an empty 2xx body counts as accepted instead of looping', () async {
       var calls = 0;
       final halvor = forwarding(MockClient((_) async {
         calls++;
@@ -554,7 +556,8 @@ void main() {
       halvor.emit(_settled());
       await halvor.flush();
       expect(calls, 1);
-      expect(halvor.stats().unconfirmed, 1);
+      expect(halvor.stats().accepted, 1);
+      expect(errors.single.code, SdkErrorCode.config);
     });
 
     test('a non-JSON 2xx body, such as a captive portal page, is retried', () async {
@@ -572,7 +575,7 @@ void main() {
       halvor.emit(_settled());
       await halvor.flush();
       expect(halvor.stats().accepted, 1);
-      expect(halvor.stats().unconfirmed, 0);
+      expect(errors, isEmpty, reason: 'a sink is not warned about missing results');
     });
   });
 
@@ -774,6 +777,121 @@ void main() {
         await halvor.flush(replaySpool: false);
       }
       expect(spool.lists, lessThanOrEqualTo(1));
+    });
+  });
+
+  group('docs/SDK.md alignment', () {
+    test('occurred_at is the time of emit, not of the batch', () async {
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        sink: sent.addAll,
+        flushInterval: const Duration(hours: 1),
+      );
+      final before = DateTime.now().toUtc();
+      halvor.emit(_settled());
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await halvor.flush();
+      final at = DateTime.parse(sent.single.event['occurred_at']! as String);
+      expect(at.difference(before).inMilliseconds, lessThan(200));
+    });
+
+    test('null optional fields are left out; a null instruction falls back to the context',
+        () async {
+      final halvor = offline();
+      withAgentContext(
+        _context,
+        () => halvor.emitJson({
+          ..._settled().toJson(),
+          'instruction': null,
+          'instrument': null,
+          'labels': null,
+          'related': null,
+          'evidence': null,
+        }),
+      );
+      await halvor.flush();
+      expect(errors, isEmpty);
+      final event = sent.single.event;
+      expect((event['instruction'] as Map)['id'], 'task_8890');
+      expect(event.keys, isNot(containsAll(['instrument', 'labels', 'related', 'evidence'])));
+    });
+
+    test('x402 payment payloads are not redacted, so their signature still verifies', () async {
+      final halvor = offline();
+      final payload = {'signature': '0x4111111111111111', 'note': 'card 4111 1111 1111 1111'};
+      final stripe = {'note': 'card 4111 1111 1111 1111'};
+      halvor.emitJson({
+        ..._settled().toJson(),
+        'evidence': [
+          Evidence.json(EvidenceKind.x402PaymentPayload, payload).toJson(),
+          Evidence.json(EvidenceKind.stripeObject, stripe).toJson(),
+        ],
+      });
+      await halvor.flush();
+      final evidence = (sent.single.event['evidence'] as List).cast<Map<Object?, Object?>>();
+      expect(evidence[0]['value'], payload);
+      expect(evidence[0]['sha256'], evidenceSha256(payload));
+      expect(evidence[1]['value'], {'note': 'card [redacted:pan]'});
+    });
+
+    HalvorClient direct(MockClient mock, {Spool? spool}) => HalvorClient(
+          sourceKey: key,
+          transport: HalvorApiTransport(apiKey: 'hk_test_${'a' * 32}', httpClient: mock),
+          environment: Environment.test,
+          spool: spool,
+          onError: errors.add,
+          retryDelays: _fast,
+        );
+
+    for (final status in [404, 405, 409, 410, 415]) {
+      test('$status is permanent: not retried, dead-lettered, never replayed', () async {
+        var calls = 0;
+        final spool = MemorySpool();
+        final halvor = direct(MockClient((_) async {
+          calls++;
+          return http.Response('', status);
+        }), spool: spool);
+        halvor.emit(_settled());
+        await halvor.flush();
+        expect(calls, 1);
+        expect(halvor.stats().dropped, 1);
+        expect(spool.dead.single, hasLength(1));
+        expect(spool.length, 0, reason: 'not in the replay queue');
+      });
+    }
+
+    test('425 is retried', () async {
+      var calls = 0;
+      final halvor = direct(
+          MockClient((r) async => ++calls == 1 ? http.Response('too early', 425) : _acceptAll(r)));
+      halvor.emit(_settled());
+      await halvor.flush();
+      expect(calls, 2);
+      expect(halvor.stats().accepted, 1);
+    });
+
+    test('a batch refused for good during replay is dead-lettered too', () async {
+      final spool = MemorySpool();
+      await spool.write([
+        SignedEnvelope({'id': 'evt_spooled_0001'}, 'sig')
+      ]);
+      final halvor = direct(MockClient((_) async => http.Response('', 422)), spool: spool);
+      await halvor.flush();
+      expect(spool.length, 0);
+      expect(spool.dead.single.single.id, 'evt_spooled_0001');
+    });
+
+    test('the request id comes from the body, else the request-id header', () async {
+      final halvor = direct(MockClient((_) async => http.Response(
+            '{"error":{"code":"invalid_event","message":"bad"}}',
+            422,
+            headers: {'request-id': 'req_from_header'},
+          )));
+      halvor.emit(_settled());
+      await halvor.flush();
+      expect(errors.single.requestId, 'req_from_header');
+      expect(errors.single.serverCode, 'invalid_event');
     });
   });
 

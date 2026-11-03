@@ -9,6 +9,10 @@ typedef SpoolEvictHandler = void Function(int envelopes, String reason);
 
 /// A [Spool] on disk: one JSON-lines file per batch, oldest first.
 ///
+/// Files are named `halvor-spool-<15-digit epoch ms>-<8 hex>.jsonl`, the format every HalvorAI SDK
+/// shares (docs/SDK.md §6). Batches the API refused for good go to `dead/`, which has the same
+/// limits and is never replayed.
+///
 /// Writes go to a temporary file that is then renamed, so a crash never leaves half a batch.
 /// The spool keeps at most [maxBytes] and nothing older than [maxAge]; the oldest batches go
 /// first, and [onEvict] is told how many events were lost. HalvorAI catches duplicates
@@ -29,15 +33,23 @@ class FileSpool implements Spool {
   final DateTime Function() _now;
   final _random = Random();
 
-  static final _entryName = RegExp(r'^(\d{17})-[0-9a-f]{8}\.jsonl$');
+  static final _entryName = RegExp(r'^halvor-spool-(\d{15})-[0-9a-f]{8}\.jsonl$');
+
+  late final FileSpool _dead = FileSpool(
+    Directory('${directory.path}/dead'),
+    maxBytes: maxBytes,
+    maxAge: maxAge,
+    onEvict: onEvict,
+    clock: _now,
+  );
 
   @override
   Future<void> write(List<SignedEnvelope> envelopes) async {
     if (envelopes.isEmpty) return;
     await directory.create(recursive: true);
-    final stamp = _now().microsecondsSinceEpoch.toString().padLeft(17, '0');
+    final stamp = _now().millisecondsSinceEpoch.toString().padLeft(15, '0');
     final suffix = _random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
-    await _writeAtomically('$stamp-$suffix.jsonl', envelopes);
+    await _writeAtomically('halvor-spool-$stamp-$suffix.jsonl', envelopes);
     await _enforceLimits();
   }
 
@@ -62,6 +74,9 @@ class FileSpool implements Spool {
   }
 
   @override
+  Future<void> writeDead(List<SignedEnvelope> envelopes) => _dead.write(envelopes);
+
+  @override
   Future<void> remove(String id) async {
     try {
       await _file(id).delete();
@@ -83,7 +98,7 @@ class FileSpool implements Spool {
   Future<void> _enforceLimits() async {
     await _removeStaleTempFiles();
     final entries = await _entries();
-    final cutoff = _now().subtract(maxAge).microsecondsSinceEpoch;
+    final cutoff = _now().subtract(maxAge).millisecondsSinceEpoch;
     var expired = 0;
     final kept = <(String, int)>[];
     for (final id in entries) {
