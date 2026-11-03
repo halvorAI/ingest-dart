@@ -319,10 +319,14 @@ class HalvorFlutter with WidgetsBindingObserver implements HalvorEmitter {
   int get droppedBeforeRegistration => _pendingDropped;
 
   /// Sends what is queued. See [HalvorClient.flush]; before registration this returns false.
-  Future<bool> flush({Duration? timeout, bool replaySpool = true}) async {
+  Future<bool> flush({
+    Duration? timeout,
+    bool replaySpool = true,
+    bool spoolOnFailure = false,
+  }) async {
     final client = _client;
     if (client == null) return _pending.isEmpty;
-    return client.flush(timeout: timeout, replaySpool: replaySpool);
+    return client.flush(timeout: timeout, replaySpool: replaySpool, spoolOnFailure: spoolOnFailure);
   }
 
   /// Stops lifecycle handling and sends what is queued. Spooled batches stay for next start.
@@ -364,8 +368,14 @@ class HalvorFlutter with WidgetsBindingObserver implements HalvorEmitter {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     switch (state) {
       case AppLifecycleState.paused || AppLifecycleState.hidden || AppLifecycleState.detached:
-        // The OS gives a backgrounded app a few seconds; spooled batches can wait.
-        unawaited(flush(timeout: const Duration(seconds: 3), replaySpool: false));
+        // The OS gives a backgrounded app a few seconds and may then stop it, losing anything
+        // still retrying in memory. So send what is queued once, and spool whatever fails at once.
+        // Spooled batches from earlier can wait for the next start or return.
+        unawaited(flush(
+          timeout: const Duration(seconds: 3),
+          replaySpool: false,
+          spoolOnFailure: true,
+        ));
       case AppLifecycleState.resumed:
         // Coming back often means the network is back too.
         if (_client == null) {

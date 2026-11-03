@@ -82,7 +82,7 @@ Each challenge, payment and settlement is recorded and signed with the install's
 | Key storage | iOS Keychain, readable after first unlock (so a background flush can sign), this device only: never in iCloud Keychain or a backup restored to another phone. Android Keystore-backed encryption; if a stored key can't be decrypted, a new one is registered. |
 | Reinstalls | iOS keeps Keychain items when an app is deleted. A marker in the app's data directory spots a fresh install, and the old key (possibly another user's) is replaced. |
 | Offline | Batches that run out of retries are kept on disk (JSON lines, written atomically), at most 5 MB and 7 days (the shared default is 50 MB; a phone gets less), oldest dropped first and reported as `spool` errors. They are re-sent on the next start, flush or return to the foreground; HalvorAI drops duplicates for good, so a re-send is never counted twice. Batches HalvorAI refuses for good go to `dead/` instead and are never re-sent. |
-| Lifecycle | Going to the background sends the queue (3-second budget); coming back retries registration and spooled batches. Otherwise batches go out every 5 seconds or at 100 events. |
+| Lifecycle | Going to the background sends the queue (3-second budget), and anything that fails is written to the spool at once instead of retrying in memory, because the OS may stop the app at any moment. Coming back retries registration and spooled batches. Otherwise batches go out every 5 seconds or at 100 events. |
 | Expired sessions | A 401 or 403 from your backend is retried, then kept on disk, never dropped. Answer 400 or 422 for refusals that will never succeed, such as an event whose owner isn't the signed-in user. |
 | Account deletion | `resetIdentity()` forgets the key and the spool. Delivery is stopped rather than drained, so nothing signed with the old key is sent or written to disk afterwards. The next `start` registers a new key. |
 | HTTPS | `provisionUrl`, `forwardUrl` and `debugEndpoint` must be `https`, because they carry the session headers or the key. `http` is allowed only for `localhost` and other loopback addresses; on an Android emulator, use `adb reverse`. |
@@ -105,13 +105,16 @@ This registers and sends straight to the HalvorAI sandbox. It only works with an
 
 `start` calls `WidgetsFlutterBinding.ensureInitialized()` itself, because secure storage and the data directory need it, so it can run before `runApp`.
 
+## Example
+
+[`example/`](example) is a runnable app with a demo backend (no API key needed), plus integration tests that run on a simulator or phone with the real secure storage and lifecycle. Tested on the iOS simulator (iPhone 17 Pro, iOS 26) and an Android emulator (Pixel 9 Pro XL).
+
 ## Not yet
 
 - Events emitted before the device is first registered are kept in memory only, so they're lost if the app is killed first. Saving them to disk would mean storing them before redaction, so it waits for a design that redacts first.
 
 - Retrying the moment the network comes back (today: on the next interval, flush or return to the foreground).
 - Hardware-backed keys: the Secure Enclave can't do Ed25519. That needs ES256 in a future APE version.
-- An example app, and tests on real devices. The unit tests use in-memory key storage, so `SecureKeyStore` itself has only been exercised through the plugin's own tests.
 
 ## License
 

@@ -257,6 +257,19 @@ void main() {
       await halvor.close();
     });
 
+    test('going to the background while the backend is down spools at once', () async {
+      // The OS may stop a backgrounded app in seconds; retries in memory would be lost.
+      final halvor = await start(retryDelays: const [Duration(seconds: 30)]);
+      await untilReady(halvor);
+      backend.deliveryDown = true;
+      halvor.emit(_settled());
+      halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(halvor.stats().spooled, 1);
+      expect(Directory('${dir.path}/spool').listSync().whereType<File>(), hasLength(1));
+      await halvor.close(timeout: Duration.zero);
+    });
+
     test('coming back to the foreground retries registration at once', () async {
       backend.registrationFailures = 1;
       final halvor = await start(registrationRetryDelays: const [Duration(hours: 1)]);

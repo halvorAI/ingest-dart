@@ -895,6 +895,58 @@ void main() {
     });
   });
 
+  group('spoolOnFailure (an app going to the background)', () {
+    HalvorClient downClient(
+            MemorySpool spool, ScriptedTransport transport, List<Duration> delays) =>
+        HalvorClient(
+          sourceKey: key,
+          environment: Environment.test,
+          transport: transport,
+          spool: spool,
+          retryDelays: delays,
+          flushInterval: const Duration(hours: 1),
+        );
+
+    test('a batch waiting to retry goes to the spool at once', () async {
+      final spool = MemorySpool();
+      final transport = ScriptedTransport([_down]);
+      final halvor = downClient(spool, transport, const [Duration(seconds: 30)]);
+      halvor.emit(_settled());
+      unawaited(halvor.flush(replaySpool: false));
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      expect(transport.batches, hasLength(1), reason: 'now waiting 30 s to retry');
+
+      final done = await halvor.flush(
+          timeout: const Duration(seconds: 2), replaySpool: false, spoolOnFailure: true);
+      expect(done, isTrue, reason: 'did not wait out the retry');
+      expect(spool.length, 1);
+      expect(transport.batches, hasLength(1), reason: 'not retried first');
+      halvor.dispose();
+    });
+
+    test('a fresh batch is tried once, then spooled', () async {
+      final spool = MemorySpool();
+      final transport = ScriptedTransport([_down]);
+      final halvor = downClient(spool, transport, const [Duration(seconds: 30)]);
+      halvor.emit(_settled());
+      await halvor.flush(
+          timeout: const Duration(seconds: 2), replaySpool: false, spoolOnFailure: true);
+      expect(transport.batches, hasLength(1));
+      expect(halvor.stats().retries, 0);
+      expect(spool.length, 1);
+    });
+
+    test('afterwards, batches are retried as usual again', () async {
+      final spool = MemorySpool();
+      final transport = ScriptedTransport([_down, _down, _ok]);
+      final halvor = downClient(spool, transport, const [Duration.zero]);
+      await halvor.flush(replaySpool: false, spoolOnFailure: true);
+      halvor.emit(_settled());
+      await halvor.flush(replaySpool: false);
+      expect(halvor.stats().retries, 1);
+    });
+  });
+
   group('https', () {
     test('only https, or http to this machine, may carry credentials', () {
       for (final ok in [

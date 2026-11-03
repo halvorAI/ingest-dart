@@ -257,6 +257,12 @@ class HalvorClient implements HalvorEmitter {
   bool _closed = false;
   bool _discarded = false;
   final _discardSignal = Completer<void>();
+
+  /// While set, a batch that fails is spooled at once instead of waiting out its retries.
+  bool _spoolNow = false;
+
+  /// Completed to cut short the retry wait under way.
+  Completer<void>? _retryWake;
   bool _configReported = false;
   bool _missingResultsReported = false;
   String? _configMessage;
@@ -342,9 +348,23 @@ class HalvorClient implements HalvorEmitter {
   /// Sends everything queued, retrying as configured. With [timeout], gives up waiting (but
   /// not sending) after that long and returns false. With [replaySpool], also re-sends
   /// spooled batches now instead of waiting for the backoff.
-  Future<bool> flush({Duration? timeout, bool replaySpool = true}) async {
+  ///
+  /// With [spoolOnFailure] (and a spool), a batch that fails is written to the spool at once,
+  /// cutting short any retry wait under way, instead of being retried in memory for up to a
+  /// minute. Use it when the process may be stopped soon, such as an app going to the
+  /// background: retries are lost with the process, the spool is not.
+  Future<bool> flush({
+    Duration? timeout,
+    bool replaySpool = true,
+    bool spoolOnFailure = false,
+  }) async {
     _timer?.cancel();
     _timer = null;
+    if (spoolOnFailure && _spool != null && !_disabled) {
+      _spoolNow = true;
+      final wake = _retryWake;
+      if (wake != null && !wake.isCompleted) wake.complete();
+    }
     if (replaySpool && _spool != null && !_disabled) {
       _spoolCooldownUntil = DateTime.fromMillisecondsSinceEpoch(0);
       _replayRequested = true;
@@ -357,11 +377,15 @@ class HalvorClient implements HalvorEmitter {
       } while (!_discarded && !_disabled && (_raw.isNotEmpty || _ready.isNotEmpty));
     }
 
+    // The spool-now mode lasts until this drain is over, even if the caller stops waiting.
+    final drained = drain().whenComplete(() {
+      if (spoolOnFailure) _spoolNow = false;
+    });
     if (timeout == null) {
-      await drain();
+      await drained;
       return true;
     }
-    final finished = await drain().then((_) => true).timeout(timeout, onTimeout: () => false);
+    final finished = await drained.then((_) => true).timeout(timeout, onTimeout: () => false);
     return finished && _raw.isEmpty && _ready.isEmpty;
   }
 
@@ -671,13 +695,17 @@ class HalvorClient implements HalvorEmitter {
           await _deadLetter(batch);
           return const [];
         case DeliveryRetry():
-          if (attempt >= _retryDelays.length) return batch;
+          // Out of retries, or told to keep it safe on disk now: the caller spools it.
+          if (attempt >= _retryDelays.length || _spoolNow) return batch;
           _counters.retries += 1;
+          final wake = _retryWake = Completer<void>();
           await Future.any([
             Future<void>.delayed(_jitter(_retryDelays[attempt])),
             _discardSignal.future,
+            wake.future,
           ]);
           if (_discarded) return const [];
+          if (_spoolNow) return batch;
       }
     }
   }
