@@ -22,3 +22,4 @@ Fixes from the core review:
 Following HalvorAI's shared SDK behaviour (ape-schema `docs/SDK.md`), through `halvorai_ingest` 0.1.0-dev.2:
 - Spool files are named `halvor-spool-<epoch ms>-<hex>.jsonl`, the format every SDK shares, and batches refused for good go to `dead/`.
 - Events missing from a response count as accepted (with a one-time warning), and an event's own `environment` is kept.
+- `HalvorFlutter` is a `HalvorEmitter`, so it can be given to `HalvorX402Client` to record x402 payments.

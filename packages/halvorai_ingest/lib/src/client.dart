@@ -119,6 +119,16 @@ class _Counters {
   int replayed = 0;
 }
 
+/// Something events can be handed to: [HalvorClient], or `HalvorFlutter` in Flutter apps.
+/// Adapters such as the x402 client take one, so they work with either.
+abstract interface class HalvorEmitter {
+  /// Queues a partial event given as JSON and returns its id. Never throws.
+  String emitJson(Map<String, Object?> event);
+
+  /// Reports a decode or mapping failure. Never throws.
+  void notify(SdkError error);
+}
+
 /// Receives signed envelopes instead of the API, for offline use and tests. Throwing makes
 /// the client retry the batch.
 typedef EnvelopeSink = FutureOr<void> Function(List<SignedEnvelope> envelopes);
@@ -171,7 +181,7 @@ class _SinkTransport implements EventTransport {
 /// Give exactly one destination: [sink] (offline), [transport] (for example a
 /// [ForwardingTransport] to your backend) or [apiKey] (straight to HalvorAI, for servers and
 /// debug builds). A bad configuration disables the client and reports a `config` error once.
-class HalvorClient {
+class HalvorClient implements HalvorEmitter {
   HalvorClient({
     required SourceKey sourceKey,
     Environment? environment,
@@ -296,6 +306,7 @@ class HalvorClient {
 
   /// Queues a partial event given as JSON, in the same shape the Node.js and Python SDKs
   /// take. Adapters use this.
+  @override
   String emitJson(Map<String, Object?> event) {
     var id = newEventId();
     try {
@@ -387,6 +398,7 @@ class HalvorClient {
   }
 
   /// For adapters: report a decode or mapping failure. Never throws.
+  @override
   void notify(SdkError error) => _report(error);
 
   // -------------------------------------------------------------------------------------------

@@ -2,6 +2,8 @@
 
 ## 0.1.0-dev.2 (unreleased)
 
+- `package:halvorai_ingest/x402.dart`: `HalvorX402Client` records x402 v2 payments over `package:http` as `payment.requested`, `payment.authorized` (linked to its challenge) and `payment.settled`/`payment.failed`. The mappers (`mapPaymentRequired`, `mapPaymentPayload`, `mapSettlementResponse`) give the same events as the Node.js SDK for the shared fixtures.
+- `HalvorEmitter`: what adapters take, implemented by `HalvorClient` and by `HalvorFlutter`.
 - `HalvorClient`: batched, signed (EdDSA) delivery with retries, 413 splitting and an optional `Spool`; `emit` never throws.
 - Destinations: offline `sink`, `ForwardingTransport` (your backend forwards to HalvorAI) and `HalvorApiTransport` (`hk_` key).
 - `withAgentContext` on `Zone` values; instruction text is hashed locally.
