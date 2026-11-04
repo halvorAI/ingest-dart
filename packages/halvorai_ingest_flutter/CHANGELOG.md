@@ -23,3 +23,7 @@ Following HalvorAI's shared SDK behaviour (ape-schema `docs/SDK.md`), through `h
 - Spool files are named `halvor-spool-<epoch ms>-<hex>.jsonl`, the format every SDK shares, and batches refused for good go to `dead/`.
 - Events missing from a response count as accepted (with a one-time warning), and an event's own `environment` is kept.
 - `HalvorFlutter` is a `HalvorEmitter`, so it can be given to `HalvorX402Client` to record x402 payments.
+- Going to the background spools a batch that fails at once instead of retrying it in memory. Found on the iOS simulator: with the backend down, an app killed within the minute of retries lost the payment event.
+- Going to the background also covers a request that hangs: what is in memory is on disk before it is sent, and a send already under way is given up on. Until now the batch stayed in memory for up to the 30-second timeout.
+- `FileSpool.write` returns the new entry's id.
+- `example/`: a runnable app with a demo backend, and integration tests for real devices.

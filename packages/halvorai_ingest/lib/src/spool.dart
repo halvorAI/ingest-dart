@@ -7,8 +7,8 @@ import 'transport.dart';
 /// Durable storage for undelivered batches. Implementations should bound their own size and
 /// may throw; the client reports failures as `spool` errors.
 abstract interface class Spool {
-  /// Stores a batch as one entry.
-  Future<void> write(List<SignedEnvelope> envelopes);
+  /// Stores a batch as one entry and returns its id, or null when there was nothing to store.
+  Future<String?> write(List<SignedEnvelope> envelopes);
 
   /// Entry ids, oldest first.
   Future<List<String>> list();
@@ -36,9 +36,11 @@ class MemorySpool implements Spool {
   int get length => _entries.values.fold(0, (sum, e) => sum + e.length);
 
   @override
-  Future<void> write(List<SignedEnvelope> envelopes) async {
-    if (envelopes.isEmpty) return;
-    _entries['${_next++}'.padLeft(12, '0')] = [...envelopes];
+  Future<String?> write(List<SignedEnvelope> envelopes) async {
+    if (envelopes.isEmpty) return null;
+    final id = '${_next++}'.padLeft(12, '0');
+    _entries[id] = [...envelopes];
+    return id;
   }
 
   @override

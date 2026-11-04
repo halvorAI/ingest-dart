@@ -1,0 +1,13 @@
+{
+  "name": "halvorai-example-backend",
+  "private": true,
+  "type": "module",
+  "description": "Demo backend for the HalvorAI Flutter example: the two device routes, a fake HalvorAI that verifies signatures, and a pretend x402 endpoint.",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "@halvorai/ingest": "^0.4.0",
+    "jose": "^6.2.12"
+  }
+}

@@ -32,6 +32,9 @@ class FakeBackend {
   final deliveries = <http.Request>[];
   var registrationFailures = 0;
   var deliveryDown = false;
+
+  /// While set, deliveries get no answer until it completes.
+  Completer<void>? deliveryHang;
   var registrationDelay = Duration.zero;
   var _sources = 0;
 
@@ -50,6 +53,7 @@ class FakeBackend {
             : http.Response(jsonEncode({'source_id': id}), 200);
       case '/halvor/events' || '/v1/events':
         deliveries.add(request);
+        await deliveryHang?.future;
         if (deliveryDown) return http.Response('down', 503);
         delivered.addAll(_envelopes(request));
         return http.Response(
@@ -254,6 +258,57 @@ void main() {
       halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
       await Future<void>.delayed(const Duration(milliseconds: 200));
       expect(backend.delivered, hasLength(1));
+      await halvor.close();
+    });
+
+    test('going to the background while the backend is down spools at once', () async {
+      // The OS may stop a backgrounded app in seconds; retries in memory would be lost.
+      final halvor = await start(retryDelays: const [Duration(seconds: 30)]);
+      await untilReady(halvor);
+      backend.deliveryDown = true;
+      halvor.emit(_settled());
+      halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+      expect(halvor.stats().spooled, 1);
+      expect(Directory('${dir.path}/spool').listSync().whereType<File>(), hasLength(1));
+      await halvor.close(timeout: Duration.zero);
+    });
+
+    test('a request that hangs: the event is on disk well within the background window', () async {
+      final halvor = await start();
+      await untilReady(halvor);
+      final hang = backend.deliveryHang = Completer<void>();
+      halvor.emit(_settled());
+
+      halvor.didChangeAppLifecycleState(AppLifecycleState.hidden);
+      halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      expect(backend.deliveries, hasLength(1), reason: 'the send is under way, and hanging');
+      expect(backend.delivered, isEmpty);
+      final spooled = Directory('${dir.path}/spool').listSync().whereType<File>();
+      expect(spooled, hasLength(1));
+
+      // The app is killed here. A new start, with the backend back, finds the event on disk.
+      expect(spooled.single.readAsStringSync(), contains('payment.settled'));
+      backend.deliveryHang = null;
+      hang.complete();
+      await halvor.close(timeout: const Duration(seconds: 1));
+    });
+
+    test('a send that hangs and then succeeds leaves nothing to send again', () async {
+      final halvor = await start();
+      await untilReady(halvor);
+      final hang = backend.deliveryHang = Completer<void>();
+      halvor.emit(_settled());
+      halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+
+      backend.deliveryHang = null;
+      hang.complete();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(backend.delivered, hasLength(1));
+      expect(Directory('${dir.path}/spool').listSync().whereType<File>(), isEmpty);
       await halvor.close();
     });
 
