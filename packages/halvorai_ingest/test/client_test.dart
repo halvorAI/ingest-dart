@@ -62,6 +62,29 @@ http.Response _acceptAll(http.Request request) {
 
 DeliveryOutcome _down(List<SignedEnvelope> _) => const DeliveryRetry('503', status: 503);
 
+/// A transport whose sends hang until a test answers them. It also records how much was in the
+/// spool at the moment of each send.
+class _HangingTransport implements EventTransport {
+  _HangingTransport(this.spool);
+
+  final MemorySpool spool;
+  final batches = <List<SignedEnvelope>>[];
+  final spooledAtSend = <int>[];
+  final answers = <Completer<DeliveryOutcome>>[];
+
+  @override
+  Future<DeliveryOutcome> send(List<SignedEnvelope> envelopes) {
+    batches.add(envelopes);
+    spooledAtSend.add(spool.length);
+    final answer = Completer<DeliveryOutcome>();
+    answers.add(answer);
+    return answer.future;
+  }
+
+  @override
+  void close() {}
+}
+
 class _CountingSpool extends MemorySpool {
   var lists = 0;
 
@@ -77,7 +100,7 @@ class _ThrowingSpool implements Spool {
   Future<void> writeDead(List<SignedEnvelope> envelopes) async =>
       throw const FileSystemException('disk full');
   @override
-  Future<void> write(List<SignedEnvelope> envelopes) async =>
+  Future<String?> write(List<SignedEnvelope> envelopes) async =>
       throw const FileSystemException('disk full');
   @override
   Future<List<String>> list() async => const [];
@@ -1036,6 +1059,210 @@ void main() {
       halvor.emit(_settled());
       await halvor.flush(replaySpool: false);
       expect(halvor.stats().retries, 1);
+    });
+
+    group('with a request that hangs', () {
+      late MemorySpool spool;
+      late _HangingTransport transport;
+      late HalvorClient halvor;
+
+      setUp(() {
+        spool = MemorySpool();
+        transport = _HangingTransport(spool);
+        halvor = HalvorClient(
+          sourceKey: key,
+          environment: Environment.test,
+          transport: transport,
+          spool: spool,
+          retryDelays: const [Duration(seconds: 30)],
+          flushInterval: const Duration(hours: 1),
+          onError: errors.add,
+        );
+      });
+
+      tearDown(() => halvor.dispose());
+
+      Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 20));
+
+      Future<bool> background() => halvor.flush(
+          timeout: const Duration(milliseconds: 50), replaySpool: false, spoolOnFailure: true);
+
+      /// Starts an ordinary send that then hangs.
+      Future<void> startHungSend() async {
+        halvor.emit(_settled());
+        unawaited(halvor.flush(replaySpool: false));
+        await settle();
+        expect(transport.batches, hasLength(1));
+        expect(spool.length, 0, reason: 'an ordinary send has no copy on disk');
+      }
+
+      test('a batch is on disk before the send that may hang', () async {
+        halvor.emit(_settled());
+        final done = await background();
+        expect(done, isFalse, reason: 'the send is still hanging');
+        expect(transport.spooledAtSend, [1]);
+        expect(spool.length, 1);
+      });
+
+      test('a send already under way is given up on, and its batch spooled', () async {
+        await startHungSend();
+        final done = await background();
+        expect(done, isTrue, reason: 'nothing is left waiting on the network');
+        expect(spool.length, 1);
+        expect(halvor.stats().spooled, 1);
+
+        // It gets through after all: the outcome is ignored and the replay is a duplicate.
+        transport.answers.single.complete(_ok(transport.batches.single));
+        await settle();
+        expect(halvor.stats().accepted, 0);
+        expect(spool.length, 1);
+      });
+
+      test('events queued behind a hung send reach the disk too', () async {
+        await startHungSend();
+        halvor.emit(_settled());
+        halvor.emit(_settled());
+        await background();
+        expect(spool.length, 3);
+      });
+
+      test('a long queue: one batch is sent, and all of it is on disk first', () async {
+        final client = HalvorClient(
+          sourceKey: key,
+          environment: Environment.test,
+          transport: transport,
+          spool: spool,
+          batchSize: 2,
+          flushInterval: const Duration(hours: 1),
+        );
+        for (var i = 0; i < 5; i++) {
+          client.emit(_settled());
+        }
+        await settle();
+        expect(transport.batches, hasLength(1), reason: 'the first full batch went out and hangs');
+
+        await client.flush(
+            timeout: const Duration(milliseconds: 50), replaySpool: false, spoolOnFailure: true);
+        expect(spool.length, 5);
+        expect(transport.batches, hasLength(2), reason: 'one more try, already on disk');
+        client.dispose();
+      });
+
+      test('a hung replay does not hold up the queue', () async {
+        final stored = HalvorClient(
+          sourceKey: key,
+          environment: Environment.test,
+          sink: (envelopes) => spool.write(envelopes),
+        );
+        stored.emit(_settled());
+        await stored.close();
+        expect(spool.length, 1);
+
+        unawaited(halvor.flush());
+        await settle();
+        expect(transport.batches, hasLength(1), reason: 'replaying the stored batch');
+        halvor.emit(_settled());
+        await background();
+        expect(spool.length, 2);
+      });
+
+      test('a delivered batch comes off the disk, so it is not sent twice', () async {
+        halvor.emit(_settled());
+        await background();
+        transport.answers.single.complete(_ok(transport.batches.single));
+        await settle();
+        expect(spool.length, 0);
+        expect(halvor.stats().accepted, 1);
+        expect(halvor.stats().spooled, 0);
+      });
+
+      test('a failed batch is kept once, with no retries', () async {
+        halvor.emit(_settled());
+        await background();
+        transport.answers.single.complete(const DeliveryRetry('503', status: 503));
+        await settle();
+        expect((await spool.list()), hasLength(1));
+        expect(halvor.stats().spooled, 1);
+        expect(halvor.stats().retries, 0);
+      });
+
+      test('a refused batch comes off the disk and goes to the dead letters', () async {
+        halvor.emit(_settled());
+        await background();
+        transport.answers.single.complete(const DeliveryFatal(422, 'no'));
+        await settle();
+        expect(spool.length, 0);
+        expect(spool.dead.single, hasLength(1));
+      });
+
+      test('a second lifecycle change does not give up on a saved send', () async {
+        // Flutter reports hidden, then paused.
+        halvor.emit(_settled());
+        await background();
+        await background();
+        expect(transport.batches, hasLength(1));
+        transport.answers.single.complete(_ok(transport.batches.single));
+        await settle();
+        expect(spool.length, 0, reason: 'the send was still being waited for');
+        expect(halvor.stats().accepted, 1);
+      });
+
+      test('discard leaves no copy on disk', () async {
+        halvor.emit(_settled());
+        await background();
+        expect(spool.length, 1);
+        final stopped = halvor.discard();
+        transport.answers.single.complete(const DeliveryRetry('503', status: 503));
+        await stopped;
+        expect(spool.length, 0);
+      });
+
+      test('afterwards, sends are ordinary again', () async {
+        halvor.emit(_settled());
+        await background();
+        transport.answers.single.complete(_ok(transport.batches.single));
+        await settle();
+
+        halvor.emit(_settled());
+        unawaited(halvor.flush(replaySpool: false));
+        await settle();
+        expect(transport.spooledAtSend.last, 0);
+        transport.answers.last.complete(_ok(transport.batches.last));
+      });
+    });
+
+    test('of a split batch, only what failed stays on disk', () async {
+      final spool = MemorySpool();
+      final transport = ScriptedTransport([(_) => const DeliveryTooLarge(), _ok, _down]);
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: transport,
+        spool: spool,
+        flushInterval: const Duration(hours: 1),
+      );
+      halvor.emit(_settled());
+      halvor.emit(_settled());
+      await halvor.flush(replaySpool: false, spoolOnFailure: true);
+      expect(spool.length, 1);
+      expect(halvor.stats().accepted, 1);
+      expect(halvor.stats().spooled, 1);
+    });
+
+    test('if the spool cannot be written, the batch is still sent', () async {
+      final transport = ScriptedTransport([_ok]);
+      final halvor = HalvorClient(
+        sourceKey: key,
+        environment: Environment.test,
+        transport: transport,
+        spool: _ThrowingSpool(),
+        flushInterval: const Duration(hours: 1),
+        onError: errors.add,
+      );
+      halvor.emit(_settled());
+      await halvor.flush(replaySpool: false, spoolOnFailure: true);
+      expect(halvor.stats().accepted, 1);
+      expect(errors.single.code, SdkErrorCode.spool);
     });
   });
 

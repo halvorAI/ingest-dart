@@ -369,7 +369,8 @@ class HalvorFlutter with WidgetsBindingObserver implements HalvorEmitter {
     switch (state) {
       case AppLifecycleState.paused || AppLifecycleState.hidden || AppLifecycleState.detached:
         // The OS gives a backgrounded app a few seconds and may then stop it, losing anything
-        // still retrying in memory. So send what is queued once, and spool whatever fails at once.
+        // held in memory, even a request in flight. So what is queued is on disk before it is
+        // sent, once, and stays there if that fails or hangs.
         // Spooled batches from earlier can wait for the next start or return.
         unawaited(flush(
           timeout: const Duration(seconds: 3),

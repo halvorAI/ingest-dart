@@ -260,11 +260,12 @@ class HalvorClient implements HalvorEmitter {
   bool _discarded = false;
   final _discardSignal = Completer<void>();
 
-  /// While set, a batch that fails is spooled at once instead of waiting out its retries.
+  /// While set, the process may stop at any moment: nothing waits on the network in memory only.
+  /// A batch is on disk before it is sent, and one that fails stays there with no more retries.
   bool _spoolNow = false;
 
-  /// Completed to cut short the retry wait under way.
-  Completer<void>? _retryWake;
+  /// Completed to stop waiting for the send or retry under way.
+  Completer<void>? _wake;
   bool _configReported = false;
   bool _missingResultsReported = false;
   String? _configMessage;
@@ -351,10 +352,15 @@ class HalvorClient implements HalvorEmitter {
   /// not sending) after that long and returns false. With [replaySpool], also re-sends
   /// spooled batches now instead of waiting for the backoff.
   ///
-  /// With [spoolOnFailure] (and a spool), a batch that fails is written to the spool at once,
-  /// cutting short any retry wait under way, instead of being retried in memory for up to a
-  /// minute. Use it when the process may be stopped soon, such as an app going to the
-  /// background: retries are lost with the process, the spool is not.
+  /// With [spoolOnFailure] (and a spool), everything held in memory reaches the spool without
+  /// waiting on the network, for a process that may be stopped soon, such as an app going to the
+  /// background: retries and requests in flight are lost with the process, the spool is not.
+  /// - A batch is written to the spool before it is sent, and removed once it is delivered.
+  /// - A batch that fails stays there, with no more retries, cutting short any retry wait.
+  /// - A send already under way is given up on, so a hung request can't hold up the rest. Its
+  ///   batch is spooled and, if that request does get through, sent again later. HalvorAI drops
+  ///   the duplicate.
+  /// - Only the first batch of a long queue is sent; the rest go straight to the spool.
   Future<bool> flush({
     Duration? timeout,
     bool replaySpool = true,
@@ -364,7 +370,7 @@ class HalvorClient implements HalvorEmitter {
     _timer = null;
     if (spoolOnFailure && _spool != null && !_disabled) {
       _spoolNow = true;
-      final wake = _retryWake;
+      final wake = _wake;
       if (wake != null && !wake.isCompleted) wake.complete();
     }
     if (replaySpool && _spool != null && !_disabled) {
@@ -467,6 +473,7 @@ class HalvorClient implements HalvorEmitter {
           final batch = _ready.sublist(0, min(_batchSize, _ready.length));
           _ready.removeRange(0, batch.length);
           try {
+            if (_spoolNow) await _spoolQueue();
             await _deliverFresh(batch);
           } catch (e) {
             _counters.dropped += batch.length;
@@ -639,16 +646,34 @@ class HalvorClient implements HalvorEmitter {
   // Delivery
 
   Future<void> _deliverFresh(List<SignedEnvelope> batch) async {
-    final left = await _send(batch);
+    final spoolNow = _spoolNow;
+    final copy = spoolNow ? await _writeCopy(batch) : null;
+    final left = _discarded ? const <SignedEnvelope>[] : await _send(batch, abortable: !spoolNow);
+    if (_discarded || left.isEmpty) await _removeCopy(copy);
     if (_discarded) return;
     if (left.isEmpty) {
       // The API is reachable again; give anything spooled earlier a go.
-      if (_spool != null && _spoolMayHaveData && DateTime.now().isAfter(_spoolCooldownUntil)) {
+      if (_spool != null &&
+          _spoolMayHaveData &&
+          !_spoolNow &&
+          DateTime.now().isAfter(_spoolCooldownUntil)) {
         _replayRequested = true;
       }
       return;
     }
     final spool = _spool;
+    if (spool != null && copy != null) {
+      // Already on disk. If trimming it fails, what was delivered is sent again and dropped.
+      _spoolMayHaveData = true;
+      _counters.spooled += left.length;
+      if (left.length == batch.length) return;
+      try {
+        await spool.replace(copy, left);
+      } catch (e) {
+        _report(SdkError(SdkErrorCode.spool, 'spool write failed: $e'));
+      }
+      return;
+    }
     if (spool != null) {
       try {
         await spool.write(left);
@@ -664,21 +689,72 @@ class HalvorClient implements HalvorEmitter {
         SdkError(SdkErrorCode.deliveryFailed, 'gave up on ${left.length} event(s) after retries'));
   }
 
+  /// Writes [batch] to the spool ahead of sending it. Null if there is no copy.
+  Future<String?> _writeCopy(List<SignedEnvelope> batch) async {
+    try {
+      return await _spool?.write(batch);
+    } catch (e) {
+      _report(SdkError(SdkErrorCode.spool, 'spool write failed: $e'));
+      return null;
+    }
+  }
+
+  Future<void> _removeCopy(String? copy) async {
+    if (copy == null) return;
+    try {
+      await _spool?.remove(copy);
+    } catch (e) {
+      _report(SdkError(SdkErrorCode.spool, 'spool remove failed: $e'));
+    }
+  }
+
+  /// Moves what is queued to the spool, so a hung send can't keep it in memory only.
+  Future<void> _spoolQueue() async {
+    await _prepareReady();
+    if (_ready.isEmpty || _discarded) return;
+    final queued = [..._ready];
+    final copy = await _writeCopy(queued);
+    if (_discarded) return _removeCopy(copy);
+    if (copy == null) return;
+    _ready.removeRange(0, queued.length);
+    _spoolMayHaveData = true;
+    _counters.spooled += queued.length;
+  }
+
+  /// One try at [batch]. With [abortable], it is null if the batch should stay in the spool
+  /// instead: going to the background stopped the wait, or came first.
+  Future<DeliveryOutcome?> _attempt(
+    EventTransport transport,
+    List<SignedEnvelope> batch, {
+    required bool abortable,
+  }) async {
+    Future<DeliveryOutcome?> send() async {
+      try {
+        return await transport.send(batch);
+      } catch (e) {
+        // EventTransport is public, and a custom one may throw despite its contract.
+        return DeliveryRetry('transport failed: $e');
+      }
+    }
+
+    if (!abortable) return send();
+    if (_spoolNow) return null;
+    final wake = _wake = Completer<void>();
+    return Future.any([send(), wake.future.then((_) => null)]);
+  }
+
   /// Sends [batch] with retries. Accepted, rejected and fatal events are settled here; returns
-  /// the ones still undelivered once retries run out.
-  Future<List<SignedEnvelope>> _send(List<SignedEnvelope> batch) async {
+  /// the ones still undelivered once retries run out. Pass [abortable] false for a batch that
+  /// must be tried now, whatever else happens.
+  Future<List<SignedEnvelope>> _send(List<SignedEnvelope> batch, {bool abortable = true}) async {
     final transport = _transport;
     if (batch.isEmpty || transport == null) return const [];
     for (var attempt = 0;; attempt++) {
-      DeliveryOutcome outcome;
-      try {
-        outcome = await transport.send(batch);
-      } catch (e) {
-        // EventTransport is public, and a custom one may throw despite its contract.
-        outcome = DeliveryRetry('transport failed: $e');
-      }
+      final outcome = await _attempt(transport, batch, abortable: abortable);
       if (_discarded) return const [];
       switch (outcome) {
+        case null:
+          return batch;
         case DeliveryOk(perEvent: false):
           _counters.accepted += batch.length;
           return const [];
@@ -698,7 +774,10 @@ class HalvorClient implements HalvorEmitter {
             return const [];
           }
           final mid = (batch.length + 1) ~/ 2;
-          return [...await _send(batch.sublist(0, mid)), ...await _send(batch.sublist(mid))];
+          return [
+            ...await _send(batch.sublist(0, mid), abortable: abortable),
+            ...await _send(batch.sublist(mid), abortable: abortable),
+          ];
         case DeliveryFatal(
             :final status,
             :final message,
@@ -722,7 +801,7 @@ class HalvorClient implements HalvorEmitter {
           // Out of retries, or told to keep it safe on disk now: the caller spools it.
           if (attempt >= _retryDelays.length || _spoolNow) return batch;
           _counters.retries += 1;
-          final wake = _retryWake = Completer<void>();
+          final wake = _wake = Completer<void>();
           await Future.any([
             Future<void>.delayed(_jitter(_retryDelays[attempt])),
             _discardSignal.future,
@@ -785,7 +864,7 @@ class HalvorClient implements HalvorEmitter {
   /// cannot block the ones behind it; only a retryable failure stops the replay.
   Future<void> _replaySpool() async {
     final spool = _spool;
-    if (spool == null || _disabled || _discarded) return;
+    if (spool == null || _disabled || _discarded || _spoolNow) return;
     if (DateTime.now().isBefore(_spoolCooldownUntil)) return;
     final List<String> ids;
     try {
