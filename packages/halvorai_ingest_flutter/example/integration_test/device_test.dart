@@ -135,6 +135,36 @@ void main() {
     errors.clear(); // the offline attempts were reported, as they should be
   });
 
+  testWidgets('a request that hangs as the app leaves: the event survives the app being killed',
+      (tester) async {
+    final first = await start();
+    final before = (await backendEvents()).length;
+    await admin('hang', {'hang': true});
+    pay(first, 'pi_it_hang');
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+    await Future<void>.delayed(const Duration(seconds: 1));
+
+    // Well inside the OS's window, with the request still unanswered: the event is already safe.
+    expect((await backendEvents()).length, before);
+    final spoolDir =
+        Directory('${(await getApplicationSupportDirectory()).path}/halvorai/test/spool');
+    final spooled = spoolDir.listSync().whereType<File>().toList();
+    expect(spooled, hasLength(1));
+    expect(spooled.single.readAsStringSync(), contains('pi_it_hang'));
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+
+    // The app is killed here: the first instance is left as it is and a new one starts.
+    await admin('hang', {'hang': false});
+    final second = await start();
+    await second.flush(timeout: const Duration(seconds: 10));
+    final events = await backendEvents();
+    expect(events.length, before + 1);
+    expect(events.last['verified'], isTrue);
+    await second.close();
+    await first.close(timeout: Duration.zero);
+    errors.clear(); // the abandoned request was reported, as it should be
+  });
+
   testWidgets('an x402 purchase records the challenge, payment and settlement', (_) async {
     final halvor = await start();
     final client = HalvorX402Client(halvor);

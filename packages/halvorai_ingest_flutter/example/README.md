@@ -46,6 +46,7 @@ These run inside the app with the real secure storage, data directory and lifecy
 - key reuse after a restart
 - sending when the app goes to the background
 - the spool across a restart
+- a request that hangs as the app leaves, and the app then being killed
 - the x402 flow
 - identity reset
 

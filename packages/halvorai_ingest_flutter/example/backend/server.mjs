@@ -4,7 +4,8 @@
 //   @halvorai/ingest/device exactly as a real backend would be.
 // - Behind them, a fake HalvorAI that registers keys and verifies every forwarded signature.
 // - GET /premium-data: a pretend x402 resource (402 first, then 200 with a settlement).
-// - /admin/*: see what arrived, and take event delivery offline to exercise the app's spool.
+// - /admin/*: see what arrived, and take event delivery offline or make it hang to exercise the
+//   app's spool.
 //
 // The signed-in user is whatever follows "Bearer " in the Authorization header.
 import { randomBytes } from 'node:crypto';
@@ -83,6 +84,8 @@ const routes = deviceRoutes({
 });
 
 let offline = false;
+let hang = false;
+const hanging = new Set();
 
 const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64');
 const REQUIREMENT = {
@@ -143,6 +146,11 @@ http
         return send(response.status, Buffer.from(await response.arrayBuffer()));
       }
       if (req.method === 'POST' && req.url === '/halvor/events') {
+        if (hang) {
+          log('app sent a batch -> no answer (hanging)');
+          hanging.add(res);
+          return;
+        }
         if (offline) {
           log('app sent a batch -> 503 (offline)');
           return send(503, { error: { code: 'unavailable', message: 'demo backend is offline' } });
@@ -161,6 +169,15 @@ http
         log(`event delivery is now ${offline ? 'OFFLINE' : 'online'}`);
         return send(200, { offline });
       }
+      if (req.url === '/admin/hang' && req.method === 'POST') {
+        hang = JSON.parse(body.toString() || '{}').hang === true;
+        log(`event delivery ${hang ? 'now HANGS' : 'answers again'}`);
+        if (!hang) {
+          for (const stuck of hanging) stuck.destroy();
+          hanging.clear();
+        }
+        return send(200, { hang });
+      }
       if (req.url === '/admin/events') {
         return send(200, { sources: [...sources.keys()], offline, events: events.map(({ event, ...rest }) => rest) });
       }
@@ -168,6 +185,7 @@ http
         events.length = 0;
         sources.clear();
         offline = false;
+        hang = false;
         log('reset');
         return send(200, { ok: true });
       }
