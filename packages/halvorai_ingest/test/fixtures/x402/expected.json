@@ -1,0 +1,265 @@
+{
+  "requested": {
+    "id": "evt_REQUESTED",
+    "type": "payment.requested",
+    "source": {
+      "adapter": "x402-client"
+    },
+    "agent": {
+      "id": "unattributed"
+    },
+    "owner": {
+      "id": "unattributed",
+      "type": "business"
+    },
+    "payment": {
+      "payment_id": "x402:eip155:84532:requested:evt_REQUESTED",
+      "rail": "x402",
+      "amount": {
+        "value": "10000",
+        "unit": "atomic",
+        "asset": {
+          "network": "eip155:84532",
+          "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          "symbol": "USDC"
+        }
+      },
+      "status": "requested",
+      "rail_ref": {
+        "scheme": "exact",
+        "network": "eip155:84532"
+      },
+      "description": "Access to premium market data"
+    },
+    "payee": {
+      "type": "api_provider",
+      "name": "Access to premium market data",
+      "resource_url": "https://api.example.com/premium-data",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C"
+      }
+    },
+    "evidence": []
+  },
+  "authorized": {
+    "type": "payment.authorized",
+    "source": {
+      "adapter": "x402-client"
+    },
+    "agent": {
+      "id": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+    },
+    "owner": {
+      "id": "unattributed",
+      "type": "business"
+    },
+    "payment": {
+      "payment_id": "x402:eip155:84532:0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480",
+      "rail": "x402",
+      "amount": {
+        "value": "10000",
+        "unit": "atomic",
+        "asset": {
+          "network": "eip155:84532",
+          "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          "symbol": "USDC"
+        }
+      },
+      "status": "authorized",
+      "rail_ref": {
+        "scheme": "exact",
+        "network": "eip155:84532",
+        "nonce": "0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480"
+      },
+      "description": "Access to premium market data"
+    },
+    "payee": {
+      "type": "api_provider",
+      "name": "Access to premium market data",
+      "resource_url": "https://api.example.com/premium-data",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C"
+      }
+    },
+    "evidence": [
+      {
+        "kind": "x402.payment_payload",
+        "format": "json",
+        "value": {
+          "x402Version": 2,
+          "resource": {
+            "url": "https://api.example.com/premium-data",
+            "description": "Access to premium market data",
+            "mimeType": "application/json"
+          },
+          "accepted": {
+            "scheme": "exact",
+            "network": "eip155:84532",
+            "amount": "10000",
+            "asset": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            "payTo": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+            "maxTimeoutSeconds": 60,
+            "extra": {
+              "name": "USDC",
+              "version": "2"
+            }
+          },
+          "payload": {
+            "signature": "0x2d6a7588d6acca505cbf0d9a4a227e0c52c6c34008c8e8986a1283259764173608a2ce6496642e377d6da8dbbf5836e9bd15092f9ecab05ded3d6293af148b571c",
+            "authorization": {
+              "from": "0x857b06519E91e3A54538791bDbb0E22373e36b66",
+              "to": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C",
+              "value": "10000",
+              "validAfter": "1740672089",
+              "validBefore": "1740672154",
+              "nonce": "0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480"
+            }
+          }
+        },
+        "sha256": "sha256:74b6d4fb54157accb8a081552b0b26754cb7c63cdd9ec6423ebc1dca0a2fc34b"
+      }
+    ],
+    "instrument": {
+      "type": "wallet",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+      }
+    },
+    "related": {
+      "previous_event_id": "evt_REQUESTED"
+    }
+  },
+  "settled": {
+    "type": "payment.settled",
+    "source": {
+      "adapter": "x402-client"
+    },
+    "agent": {
+      "id": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+    },
+    "owner": {
+      "id": "unattributed",
+      "type": "business"
+    },
+    "payment": {
+      "payment_id": "x402:eip155:84532:0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480",
+      "rail": "x402",
+      "amount": {
+        "value": "10000",
+        "unit": "atomic",
+        "asset": {
+          "network": "eip155:84532",
+          "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          "symbol": "USDC"
+        }
+      },
+      "status": "settled",
+      "rail_ref": {
+        "scheme": "exact",
+        "network": "eip155:84532",
+        "nonce": "0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480",
+        "tx_hash": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+      },
+      "description": "Access to premium market data"
+    },
+    "payee": {
+      "type": "api_provider",
+      "name": "Access to premium market data",
+      "resource_url": "https://api.example.com/premium-data",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C"
+      }
+    },
+    "evidence": [
+      {
+        "kind": "x402.settlement",
+        "format": "json",
+        "value": {
+          "success": true,
+          "transaction": "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+          "network": "eip155:84532",
+          "payer": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+        },
+        "sha256": "sha256:69fea544771c5005f820aa20689d63f5a5293d52c5b30649a1959ad5ed90b178"
+      }
+    ],
+    "instrument": {
+      "type": "wallet",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+      }
+    }
+  },
+  "failed": {
+    "type": "payment.failed",
+    "source": {
+      "adapter": "x402-client"
+    },
+    "agent": {
+      "id": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+    },
+    "owner": {
+      "id": "unattributed",
+      "type": "business"
+    },
+    "payment": {
+      "payment_id": "x402:eip155:84532:0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480",
+      "rail": "x402",
+      "amount": {
+        "value": "10000",
+        "unit": "atomic",
+        "asset": {
+          "network": "eip155:84532",
+          "address": "0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+          "symbol": "USDC"
+        }
+      },
+      "status": "failed",
+      "rail_ref": {
+        "scheme": "exact",
+        "network": "eip155:84532",
+        "nonce": "0xf3746613c2d920b5fdabc0856f2aeb2d4f88ee6037b8cc5d04a71a4462f13480"
+      },
+      "failure_reason": "insufficient_funds",
+      "description": "Access to premium market data"
+    },
+    "payee": {
+      "type": "api_provider",
+      "name": "Access to premium market data",
+      "resource_url": "https://api.example.com/premium-data",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x209693Bc6afc0C5328bA36FaF03C514EF312287C"
+      }
+    },
+    "evidence": [
+      {
+        "kind": "x402.settlement",
+        "format": "json",
+        "value": {
+          "success": false,
+          "errorReason": "insufficient_funds",
+          "transaction": "",
+          "network": "eip155:84532",
+          "payer": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+        },
+        "sha256": "sha256:21fded6549afd055acb320e8e43f4601311ccbf7894bc3f7071697382148a107"
+      }
+    ],
+    "instrument": {
+      "type": "wallet",
+      "wallet": {
+        "network": "eip155:84532",
+        "address": "0x857b06519E91e3A54538791bDbb0E22373e36b66"
+      }
+    }
+  },
+  "settledWithoutContext": {
+    "throws": "x402 payment requirement has no asset; event not recorded"
+  }
+}

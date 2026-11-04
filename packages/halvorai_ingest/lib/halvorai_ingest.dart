@@ -12,6 +12,7 @@ export 'src/client.dart'
         EnvelopeSink,
         ErrorHandler,
         HalvorClient,
+        HalvorEmitter,
         SdkError,
         SdkErrorCode,
         defaultRetryDelays;

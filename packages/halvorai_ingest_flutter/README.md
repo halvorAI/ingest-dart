@@ -52,6 +52,18 @@ await withAgentContext(
 
 Wrap the agent's own task in `withAgentContext`: the context follows `await`s inside it, but a widget's `onPressed` runs outside it.
 
+## x402 payments
+
+If the agent pays with x402 over `package:http`, give your x402 client a `HalvorX402Client` built on this SDK as its HTTP client:
+
+```dart
+import 'package:halvorai_ingest/x402.dart';
+
+final http = HalvorX402Client(halvor); // halvor from HalvorFlutter.start
+```
+
+Each challenge, payment and settlement is recorded and signed with the install's key. See the `halvorai_ingest` README.
+
 ## Your backend's two routes
 
 **Provisioning** (`provisionUrl`)
