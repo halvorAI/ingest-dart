@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-dev.1 (unreleased)
+## 0.1.0-dev.2 (unreleased)
 
 - `HalvorClient`: batched, signed (EdDSA) delivery with retries, 413 splitting and an optional `Spool`; `emit` never throws.
 - Destinations: offline `sink`, `ForwardingTransport` (your backend forwards to HalvorAI) and `HalvorApiTransport` (`hk_` key).
@@ -21,14 +21,18 @@
 - A malformed `endpoint` disables the client instead of throwing. Insecure-URL errors leave out userinfo and query.
 - After a replay finds the spool empty, successful batches no longer list the spool each time.
 
-Differences from the Node.js and Python SDKs, on purpose:
-- A spool entry the API refuses for good is removed instead of blocking later entries, and a single event that is too large is dropped, never spooled.
-- Fatal API errors carry the server's error code.
-- A sync error thrown inside `withAgentContext` reaches the caller as a throw.
-- A steady trickle of events still goes out every flush interval; the timer is not reset by each `emit`.
-- `source.id` and `source.sdk` always come from the client; an input can only set `source.adapter`.
+Follows HalvorAI's shared SDK behaviour (ape-schema `docs/SDK.md`), like the Node.js and Python SDKs:
+- An event may set its own `environment`; HalvorAI rejects a mismatch per event.
+- An event a 2xx response has no result for counts as accepted, with a one-time `config` warning. An empty 2xx body is not retried; a non-JSON one is.
+- `occurred_at` is stamped when `emit` is called, not when the batch is built.
+- Null optional fields are left out, and a null `instruction` falls back to the agent context.
+- Digit runs glued to letters (hex, base64, ids) are not card numbers. (As Node.js 0.3.3 and Python 0.4.1; `docs/SDK.md` §3 doesn't say so yet.)
+- 404, 405, 409, 410 and 415 are permanent like 400, 401, 403 and 422, and 425 is retried. Permanent batches go to the spool's dead letters (`Spool.writeDead`), never replayed.
+- Errors carry the API's request id, from the body or the `request-id` header.
 
-Proposed for all three SDKs (PY-17 to PY-19 and JS-16 to JS-18 in the fix lists); Dart does them already:
-- Label keys, `payee.website` and `payee.resource_url` are redacted and checked for card numbers too. Identifiers and rail refs are not, since numeric network ids often pass the Luhn check.
-- An event whose `environment` differs from the client's is dropped as `invalid_event`, not sent. `EventInput` has no `environment` field.
-- An event the response has no result for counts as `unconfirmed`, not `accepted`, and is not retried; a `config` error is reported once. An empty 2xx body is unconfirmed; a non-JSON 2xx body is still retried.
+Different from `docs/SDK.md`, on purpose:
+- **`x402.payment_payload` evidence is checked, not skipped.** Redacting it would break its signature, so Node.js 0.3.3 and Python 0.4.1 leave it alone. Here it must have the x402 shape and hold nothing redaction would change (the two amount fields must be digits and are not scanned). If not, that evidence is dropped and reported as `invalid_event`, and the event still goes out. Valid payloads give the same events as the other SDKs.
+- **Card-number redaction is stricter.** Besides whole runs, whole digit groups that form a card number are redacted, so `card 4111 1111 1111 1111 2026` doesn't go out. This only changes what is stripped before signing; validation keeps the spec rule, so every event is still one the server and the other SDKs accept.
+- `ForwardingTransport` retries and spools 401 and 403, because from a customer backend they mean "session expired, try later". The direct API transport treats them as permanent, as the spec says.
+- No exit hook (Dart has no reliable one); call `close()`. No `HALVOR_*` environment variables, since the core also runs in Flutter apps and on the web.
+- A sync error thrown inside `withAgentContext` reaches the caller as a throw, and a steady trickle of events still goes out every flush interval.
