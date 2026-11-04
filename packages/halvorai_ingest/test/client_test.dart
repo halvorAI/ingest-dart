@@ -817,22 +817,114 @@ void main() {
       expect(event.keys, isNot(containsAll(['instrument', 'labels', 'related', 'evidence'])));
     });
 
-    test('x402 payment payloads are not redacted, so their signature still verifies', () async {
-      final halvor = offline();
-      final payload = {'signature': '0x4111111111111111', 'note': 'card 4111 1111 1111 1111'};
-      final stripe = {'note': 'card 4111 1111 1111 1111'};
-      halvor.emitJson({
-        ..._settled().toJson(),
-        'evidence': [
-          Evidence.json(EvidenceKind.x402PaymentPayload, payload).toJson(),
-          Evidence.json(EvidenceKind.stripeObject, stripe).toJson(),
-        ],
+    group('signed x402 evidence', () {
+      Map<String, Object?> x402Payload({
+        Object? description = 'Premium data',
+        Object? value = '10000',
+        Map<String, Object?> extra = const {'name': 'USDC'},
+      }) =>
+          {
+            'x402Version': 2,
+            'resource': {'url': 'https://api.example.com/data', 'description': description},
+            'accepted': {
+              'scheme': 'exact',
+              'network': 'eip155:84532',
+              'amount': '10000',
+              'extra': extra,
+            },
+            'payload': {
+              'signature': '0x4111111111111111',
+              'authorization': {'from': '0xabc', 'value': value, 'nonce': '0xf374'},
+            },
+          };
+
+      List<Map<Object?, Object?>> evidenceOf(Map<String, Object?> event) =>
+          ((event['evidence'] as List?) ?? const []).cast<Map<Object?, Object?>>();
+
+      Future<void> emitWith(Map<String, Object?> payload) async {
+        final halvor = offline();
+        halvor.emitJson({
+          ..._settled().toJson(),
+          'evidence': [
+            Evidence.json(EvidenceKind.x402PaymentPayload, payload).toJson(),
+            Evidence.json(EvidenceKind.stripeObject, {'note': 'card 4111 1111 1111 1111'}).toJson(),
+          ],
+        });
+        await halvor.flush();
+      }
+
+      test('a real payload goes out unchanged, so its signature still verifies', () async {
+        final payload = x402Payload();
+        await emitWith(payload);
+        final evidence = evidenceOf(sent.single.event);
+        expect(evidence[0]['value'], payload);
+        expect(evidence[0]['sha256'], evidenceSha256(payload));
+        expect(evidence[1]['value'], {'note': 'card [redacted:pan]'});
+        expect(errors, isEmpty);
       });
-      await halvor.flush();
-      final evidence = (sent.single.event['evidence'] as List).cast<Map<Object?, Object?>>();
-      expect(evidence[0]['value'], payload);
-      expect(evidence[0]['sha256'], evidenceSha256(payload));
-      expect(evidence[1]['value'], {'note': 'card [redacted:pan]'});
+
+      test('a long amount that passes the card-number check is kept', () async {
+        final payload = x402Payload(value: '4111111111111111');
+        await emitWith(payload);
+        expect(evidenceOf(sent.single.event)[0]['value'], payload);
+      });
+
+      final unsafe = <String, Map<String, Object?>>{
+        'card number in free text': x402Payload(description: 'card 4111 1111 1111 1111'),
+        'card number as a number': x402Payload(description: 4111111111111111),
+        'secret key': x402Payload(extra: {'token': 'sk_live_${'a' * 24}'}),
+        'CVC': x402Payload(extra: {'note': 'cvc 123'}),
+        'private key': x402Payload(extra: {
+          'jwk': {'kty': 'OKP', 'd': 'secret'}
+        }),
+        'card number in a field name': x402Payload(extra: {'4111 1111 1111 1111': 'x'}),
+        'text in an amount field': x402Payload(value: 'card 4111 1111 1111 1111'),
+        'unknown top-level field': {...x402Payload(), 'note': 'hello'},
+        'not a payment payload': {'signature': '0xabc', 'note': 'card 4111 1111 1111 1111'},
+      };
+      for (final MapEntry(key: name, value: payload) in unsafe.entries) {
+        test('$name: evidence is dropped and reported, the event still goes out', () async {
+          await emitWith(payload);
+          final event = sent.single.event;
+          final evidence = evidenceOf(event);
+          expect(evidence.single['kind'], 'stripe.object');
+          expect(jsonEncode(event), isNot(contains('4111 1111 1111 1111')));
+          final error = errors.single;
+          expect(error.code, SdkErrorCode.invalidEvent);
+          expect(error.eventId, event['id']);
+          expect(error.message, startsWith('x402.payment_payload evidence dropped:'));
+          expect(error.message, isNot(contains('4111')));
+        });
+      }
+
+      test('the only evidence being dropped leaves no empty list', () async {
+        final halvor = offline();
+        halvor.emitJson({
+          ..._settled().toJson(),
+          'evidence': [
+            Evidence.json(EvidenceKind.x402PaymentPayload, {'note': 'x'}).toJson(),
+          ],
+        });
+        await halvor.flush();
+        expect(sent.single.event.containsKey('evidence'), isFalse);
+      });
+
+      test('a payload stored elsewhere has no value to check and is kept', () async {
+        final halvor = offline();
+        final stored = Evidence.uri(
+          EvidenceKind.x402PaymentPayload,
+          EvidenceFormat.json,
+          'https://evidence.example/p/1',
+          sha256: 'sha256:${'a' * 64}',
+        );
+        halvor.emitJson({
+          ..._settled().toJson(),
+          'evidence': [stored.toJson()],
+        });
+        await halvor.flush();
+        expect(evidenceOf(sent.single.event).single['uri'], stored.uri);
+        expect(errors, isEmpty);
+      });
     });
 
     HalvorClient direct(MockClient mock, {Spool? spool}) => HalvorClient(
