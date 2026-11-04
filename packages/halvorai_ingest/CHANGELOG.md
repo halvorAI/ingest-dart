@@ -33,6 +33,7 @@ Follows HalvorAI's shared SDK behaviour (ape-schema `docs/SDK.md`), like the Nod
 - Errors carry the API's request id, from the body or the `request-id` header.
 
 Different from `docs/SDK.md`, on purpose:
+- **x402 payments link to their challenge more carefully.** Node.js and Python remember one challenge per URL, so overlapping requests can link to the wrong one. `HalvorX402Client` matches on URL, terms and agent task, and leaves the link out if that doesn't settle it.
 - **`x402.payment_payload` evidence is checked, not skipped.** Redacting it would break its signature, so Node.js 0.3.3 and Python 0.4.1 leave it alone. Here it must have the x402 shape and hold nothing redaction would change (the two amount fields must be digits and are not scanned). If not, that evidence is dropped and reported as `invalid_event`, and the event still goes out. Valid payloads give the same events as the other SDKs.
 - **Card-number redaction is stricter.** Besides whole runs, whole digit groups that form a card number are redacted, so `card 4111 1111 1111 1111 2026` doesn't go out. This only changes what is stripped before signing; validation keeps the spec rule, so every event is still one the server and the other SDKs accept.
 - `ForwardingTransport` retries and spools 401 and 403, because from a customer backend they mean "session expired, try later". The direct API transport treats them as permanent, as the spec says.
