@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -227,6 +228,206 @@ void main() {
       final authorized =
           sent.map((e) => e.event).firstWhere((e) => e['type'] == 'payment.authorized');
       expect(authorized.containsKey('related'), isFalse);
+    });
+
+    group('overlapping payments to one URL', () {
+      final url = Uri.parse('https://api.example.com/premium-data');
+
+      String challenge(String amount) {
+        final required = fixture('payment-required');
+        ((required['accepts'] as List).single as Map)['amount'] = amount;
+        return encodePaymentHeader(required);
+      }
+
+      Map<String, String> payment(String amount, String nonce) {
+        final payload = fixture('payment-payload');
+        (payload['accepted'] as Map)['amount'] = amount;
+        final authorization = (payload['payload'] as Map)['authorization'] as Map;
+        authorization['value'] = amount;
+        authorization['nonce'] = nonce;
+        return {'PAYMENT-SIGNATURE': encodePaymentHeader(payload)};
+      }
+
+      /// A server that answers each unpaid request with the next of [challenges].
+      MockClient serverOf(List<String> challenges) {
+        var next = 0;
+        return MockClient((request) async {
+          if (request.headers['PAYMENT-SIGNATURE'] != null) return http.Response('{}', 200);
+          return http.Response('pay', 402, headers: {'payment-required': challenges[next++]});
+        });
+      }
+
+      List<Map<String, Object?>> ofType(String type) => [
+            for (final e in sent)
+              if (e.event['type'] == type) e.event
+          ];
+
+      Map<String, Object?> authorizedFor(String nonce) => ofType('payment.authorized')
+          .firstWhere((e) => (e['payment'] as Map)['payment_id'].toString().endsWith(nonce));
+
+      Object? linkOf(Map<String, Object?> event) =>
+          (event['related'] as Map?)?['previous_event_id'];
+
+      Object? amountOf(Map<String, Object?> event) =>
+          ((event['payment'] as Map)['amount'] as Map)['value'];
+
+      test('different terms: each payment links to its challenge', () async {
+        final client =
+            HalvorX402Client(halvor, inner: serverOf([challenge('10000'), challenge('20000')]));
+        await client.get(url);
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await client.get(url, headers: payment('20000', '0xbb'));
+        await halvor.flush();
+
+        final requested = {for (final e in ofType('payment.requested')) amountOf(e): e['id']};
+        expect(linkOf(authorizedFor('0xaa')), requested['10000']);
+        expect(linkOf(authorizedFor('0xbb')), requested['20000']);
+      });
+
+      test('later challenge paid first: the earlier one is still linked correctly', () async {
+        final client =
+            HalvorX402Client(halvor, inner: serverOf([challenge('10000'), challenge('20000')]));
+        await client.get(url);
+        await client.get(url);
+        await client.get(url, headers: payment('20000', '0xbb'));
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await halvor.flush();
+
+        final requested = {for (final e in ofType('payment.requested')) amountOf(e): e['id']};
+        expect(linkOf(authorizedFor('0xaa')), requested['10000']);
+        expect(linkOf(authorizedFor('0xbb')), requested['20000']);
+      });
+
+      test('same terms in separate agent tasks: each links to its own challenge', () async {
+        final client =
+            HalvorX402Client(halvor, inner: serverOf([challenge('10000'), challenge('10000')]));
+        final bothChallenged = Completer<void>();
+        var challenged = 0;
+
+        Future<void> buy(String agent, String nonce) => withAgentContext(
+              AgentContext(
+                agent: AgentRef(id: agent),
+                owner: const OwnerRef(id: 'own_1', type: OwnerType.business),
+              ),
+              () async {
+                await client.get(url);
+                if (++challenged == 2) bothChallenged.complete();
+                await bothChallenged.future;
+                await client.get(url, headers: payment('10000', nonce));
+              },
+            );
+        await Future.wait([buy('agt_a', '0xaa'), buy('agt_b', '0xbb')]);
+        await halvor.flush();
+
+        final requested = {
+          for (final e in ofType('payment.requested')) (e['agent'] as Map)['id']: e['id'],
+        };
+        expect(requested, hasLength(2));
+        expect(linkOf(authorizedFor('0xaa')), requested['agt_a']);
+        expect(linkOf(authorizedFor('0xbb')), requested['agt_b']);
+      });
+
+      test('same terms in one task: neither payment gets a guessed link', () async {
+        final client =
+            HalvorX402Client(halvor, inner: serverOf([challenge('10000'), challenge('10000')]));
+        await client.get(url);
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await client.get(url, headers: payment('10000', '0xbb'));
+        await halvor.flush();
+
+        expect(ofType('payment.authorized'), hasLength(2));
+        expect(linkOf(authorizedFor('0xaa')), isNull);
+        expect(linkOf(authorizedFor('0xbb')), isNull);
+        expect(errors, isEmpty);
+      });
+
+      test('a challenge left ambiguous is not linked when a new one arrives', () async {
+        final client = HalvorX402Client(halvor,
+            inner: serverOf([for (var i = 0; i < 3; i++) challenge('10000')]));
+        await client.get(url);
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xbb'));
+        await client.get(url, headers: payment('10000', '0xcc'));
+        await halvor.flush();
+
+        for (final nonce in ['0xaa', '0xbb', '0xcc']) {
+          expect(linkOf(authorizedFor(nonce)), isNull, reason: nonce);
+        }
+      });
+
+      test('once the overlap is over, payments link again', () async {
+        final client = HalvorX402Client(halvor,
+            inner: serverOf([for (var i = 0; i < 3; i++) challenge('10000')]));
+        await client.get(url);
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await client.get(url, headers: payment('10000', '0xbb'));
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xcc'));
+        await halvor.flush();
+
+        expect(linkOf(authorizedFor('0xcc')), ofType('payment.requested').last['id']);
+      });
+
+      test('an abandoned challenge stops counting once it has timed out', () async {
+        var now = DateTime.utc(2026, 11, 4, 12);
+        final client = HalvorX402Client(halvor,
+            inner: serverOf([challenge('10000'), challenge('10000')]), now: () => now);
+        await client.get(url);
+        now = now.add(const Duration(seconds: 61)); // the fixture's maxTimeoutSeconds is 60
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await halvor.flush();
+
+        expect(linkOf(authorizedFor('0xaa')), ofType('payment.requested').last['id']);
+      });
+
+      test('an open abandoned challenge makes the next payment ambiguous, so no link', () async {
+        final client =
+            HalvorX402Client(halvor, inner: serverOf([challenge('10000'), challenge('10000')]));
+        await client.get(url);
+        await client.get(url);
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await halvor.flush();
+
+        expect(linkOf(authorizedFor('0xaa')), isNull);
+      });
+
+      test('a payment made from another zone still links to the only open challenge', () async {
+        final client = HalvorX402Client(halvor, inner: serverOf([challenge('10000')]));
+        await client.get(url);
+        await withAgentContext(
+          const AgentContext(owner: OwnerRef(id: 'own_1', type: OwnerType.business)),
+          () => client.get(url, headers: payment('10000', '0xaa')),
+        );
+        await halvor.flush();
+
+        expect(linkOf(authorizedFor('0xaa')), ofType('payment.requested').single['id']);
+      });
+
+      test('a payment on other terms is not linked to the open challenge', () async {
+        final client = HalvorX402Client(halvor, inner: serverOf([challenge('10000')]));
+        await client.get(url);
+        await client.get(url, headers: payment('99999', '0xaa'));
+        await halvor.flush();
+
+        expect(linkOf(authorizedFor('0xaa')), isNull);
+      });
+
+      test('a signature it cannot read leaves the challenge open', () async {
+        final client = HalvorX402Client(halvor, inner: serverOf([challenge('10000')]));
+        await client.get(url);
+        await client.get(url, headers: {'PAYMENT-SIGNATURE': '%%% not base64'});
+        await client.get(url, headers: payment('10000', '0xaa'));
+        await halvor.flush();
+
+        expect(errors.single.message, contains('PAYMENT-SIGNATURE'));
+        expect(linkOf(authorizedFor('0xaa')), ofType('payment.requested').single['id']);
+      });
     });
 
     test('works with HalvorFlutter or anything else that is a HalvorEmitter', () async {

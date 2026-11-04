@@ -84,7 +84,7 @@ Wrapped around the outside of the x402 client instead, it would only see the fin
 
 What it records:
 - **The 402 challenge** (`PAYMENT-REQUIRED`) becomes `payment.requested`.
-- **The signed retry** (`PAYMENT-SIGNATURE`) becomes `payment.authorized`, linked to the challenge for the same URL with `related.previous_event_id`, with the payload attached verbatim as evidence.
+- **The signed retry** (`PAYMENT-SIGNATURE`) becomes `payment.authorized`, linked to its challenge with `related.previous_event_id`, with the payload attached as evidence. x402 gives a challenge no id, so the match uses the URL, the terms and the `withAgentContext` the request ran in. If that leaves more than one open challenge, the payment is recorded with no link rather than a guessed one, so run concurrent purchases in their own `withAgentContext`.
 - **The settlement** (`PAYMENT-RESPONSE`) becomes `payment.settled` or `payment.failed`, with the same `payment_id`.
 - **A header it can't decode,** or a challenge without a network or token address, is reported as `invalid_event`, never guessed and never thrown into the request.
 
