@@ -12,6 +12,7 @@ import 'ids.dart';
 import 'models.dart';
 import 'redact.dart';
 import 'sign.dart';
+import 'signed_evidence.dart';
 import 'spool.dart';
 import 'time.dart';
 import 'transport.dart';
@@ -125,7 +126,8 @@ typedef EnvelopeSink = FutureOr<void> Function(List<SignedEnvelope> envelopes);
 
 typedef ErrorHandler = void Function(SdkError error);
 
-/// JSON evidence that carries a signature over its own fields, so redaction would break it.
+/// JSON evidence that carries a signature over its own fields, so redaction would break it. It
+/// must pass [x402PayloadProblem] instead.
 const _signedJsonEvidence = {'x402.payment_payload'};
 
 /// Backoff between delivery attempts; each delay gets up to 20 % jitter.
@@ -563,14 +565,36 @@ class HalvorClient {
     }
     final evidence = event['evidence'];
     if (evidence is List) {
+      final kept = <Object?>[];
       for (final item in evidence) {
-        // A signed x402 payload is evidence only while byte-identical, and holds no card number.
-        if (item is Map && _signedJsonEvidence.contains(item['kind'])) continue;
+        // A signed x402 payload is evidence only while byte-identical, so it is never rewritten:
+        // it goes out whole if it is safe, or not at all.
+        if (item is Map && _signedJsonEvidence.contains(item['kind'])) {
+          final problem = item['value'] == null
+              ? null
+              : x402PayloadProblem(item['value'], extraPatterns: _redactPatterns);
+          if (problem == null) {
+            kept.add(item);
+          } else {
+            _report(SdkError(
+              SdkErrorCode.invalidEvent,
+              '${item['kind']} evidence dropped: $problem',
+              eventId: event['id'] as String?,
+            ));
+          }
+          continue;
+        }
         if (item is Map && item['format'] == 'json' && item['value'] != null) {
           final value = redactDeep(item['value'], extraPatterns: _redactPatterns)!;
           item['value'] = value;
           item['sha256'] = evidenceSha256(value);
         }
+        kept.add(item);
+      }
+      if (kept.isEmpty && evidence.isNotEmpty) {
+        event.remove('evidence');
+      } else {
+        event['evidence'] = kept;
       }
     }
   }

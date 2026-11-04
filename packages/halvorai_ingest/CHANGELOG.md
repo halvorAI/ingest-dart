@@ -26,11 +26,12 @@ Follows HalvorAI's shared SDK behaviour (ape-schema `docs/SDK.md`), like the Nod
 - An event a 2xx response has no result for counts as accepted, with a one-time `config` warning. An empty 2xx body is not retried; a non-JSON one is.
 - `occurred_at` is stamped when `emit` is called, not when the batch is built.
 - Null optional fields are left out, and a null `instruction` falls back to the agent context.
-- Digit runs glued to letters (hex, base64, ids) are not card numbers, and `x402.payment_payload` evidence is not redacted, so its signature still verifies. (Both as Node.js 0.3.3 and Python 0.4.1; `docs/SDK.md` §3 doesn't say so yet.)
+- Digit runs glued to letters (hex, base64, ids) are not card numbers. (As Node.js 0.3.3 and Python 0.4.1; `docs/SDK.md` §3 doesn't say so yet.)
 - 404, 405, 409, 410 and 415 are permanent like 400, 401, 403 and 422, and 425 is retried. Permanent batches go to the spool's dead letters (`Spool.writeDead`), never replayed.
 - Errors carry the API's request id, from the body or the `request-id` header.
 
 Different from `docs/SDK.md`, on purpose:
+- **`x402.payment_payload` evidence is checked, not skipped.** Redacting it would break its signature, so Node.js 0.3.3 and Python 0.4.1 leave it alone. Here it must have the x402 shape and hold nothing redaction would change (the two amount fields must be digits and are not scanned). If not, that evidence is dropped and reported as `invalid_event`, and the event still goes out. Valid payloads give the same events as the other SDKs.
 - **Card-number redaction is stricter.** Besides whole runs, whole digit groups that form a card number are redacted, so `card 4111 1111 1111 1111 2026` doesn't go out. This only changes what is stripped before signing; validation keeps the spec rule, so every event is still one the server and the other SDKs accept.
 - `ForwardingTransport` retries and spools 401 and 403, because from a customer backend they mean "session expired, try later". The direct API transport treats them as permanent, as the spec says.
 - No exit hook (Dart has no reliable one); call `close()`. No `HALVOR_*` environment variables, since the core also runs in Flutter apps and on the web.
