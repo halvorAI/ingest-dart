@@ -118,4 +118,18 @@ void main() {
     expect(redactText('cvc 12345'), 'cvc 12345');
     expect(redactText('cvc 123 and more'), 'cvc [redacted:cvc] and more');
   });
+
+  group('digits glued to letters are not card numbers', () {
+    // As the Node.js and Python SDKs: hex signatures, base64 values and ids.
+    for (final text in ['sig 0xabc4111111111111111def', 'b64 QUJD4111111111111111RUY=']) {
+      test(text, () {
+        expect(redactText(text), text);
+        expect(containsPan(text), isFalse);
+      });
+    }
+
+    test('a card number on its own is still caught', () {
+      expect(containsPan('card 4111111111111111 ok'), isTrue);
+    });
+  });
 }

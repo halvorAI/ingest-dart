@@ -1,6 +1,6 @@
 name: halvorai_ingest
 description: Signed, attributed payment events for AI agents. Never in the payment path.
-version: 0.1.0-dev.1
+version: 0.1.0-dev.2
 homepage: https://docs.halvorai.com
 repository: https://github.com/halvorAI/ingest-dart/tree/main/packages/halvorai_ingest
 issue_tracker: https://github.com/halvorAI/ingest-dart/issues

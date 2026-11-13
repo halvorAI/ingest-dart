@@ -58,7 +58,16 @@ A bad configuration does not throw. It disables the client, reports a `config` e
 
 ## Delivery
 
-Events are batched (100, or every second), retried with backoff on network errors, 408, 429 and 5xx, and split on 413. `stats().accepted` counts only events the API confirmed; an event the response has no result for counts as `unconfirmed`, which with `ForwardingTransport` usually means the backend is not returning HalvorAI's response unchanged. A 400/401/403/422 is not retried; the error carries the API's code (`unknown_source`, `invalid_signature`, …). Pass a `Spool` to keep batches that run out of retries; they are re-sent on the next `flush()` or start, and an entry the API refuses for good is removed rather than blocking the rest.
+Delivery follows HalvorAI's shared SDK behaviour ([docs/SDK.md](https://github.com/halvorAI/ape-schema/blob/main/docs/SDK.md)), as the Node.js and Python SDKs do:
+
+- Events are batched (100, or every second). Network errors, 408, 425, 429 and 5xx are retried with backoff, and a 413 splits the batch.
+- **400, 401, 403, 404, 405, 409, 410, 415 and 422 are permanent.** The batch is counted as dropped once, and the error carries the API's code (`unknown_source`, `invalid_signature`, …) and request id.
+- **Each event is counted by its result.** An event the response has no result for counts as accepted; the client warns once with a `config` error, since HalvorAI always answers every event, so a missing result usually means a forwarding backend isn't passing the response through.
+- **Pass a `Spool`** to keep batches that run out of retries. They're re-sent on the next `flush()` or start. A batch the API refuses for good goes to the spool's dead letters and is never replayed.
+
+**Exception:** with `ForwardingTransport`, a 401 or 403 from your backend is retried and spooled, because on a phone it usually means an expired session.
+
+Dart has no reliable exit hook, so call `close()` before a server process exits. Flutter apps get this from `halvorai_ingest_flutter`, which flushes when the app goes to the background.
 
 ## Agent context
 

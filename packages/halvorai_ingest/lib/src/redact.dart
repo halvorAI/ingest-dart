@@ -21,7 +21,9 @@ final _jwkD = RegExp(r'"d"\s*:\s*"[^"]*"');
 // first four digits would leave the rest showing.
 final _cvc = RegExp(r'\b(cvc|cvv2?|security code)("\s*:\s*"|\s*[:=]\s*|\s+)(\d{3,4})(?!\d)(")?',
     caseSensitive: false);
-final _panRun = RegExp(r'\d(?:[ -]?\d)*');
+// A digit run not glued to letters or more digits: inside a hex signature, a base64 value or an
+// id, digits sit next to letters and are not a card number. Same as the Node.js and Python SDKs.
+final _panRun = RegExp(r'(?<![0-9A-Za-z])\d(?:[ -]?\d)*(?![0-9A-Za-z])');
 final _separators = RegExp(r'[ -]');
 
 const _maxDepth = 64;

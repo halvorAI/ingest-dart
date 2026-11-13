@@ -20,11 +20,17 @@ abstract interface class Spool {
   Future<void> replace(String id, List<SignedEnvelope> remaining);
 
   Future<void> remove(String id);
+
+  /// Keeps a batch the API refused for good. Never listed or replayed.
+  Future<void> writeDead(List<SignedEnvelope> envelopes);
 }
 
 /// A [Spool] in memory. It does not survive a restart; for tests and short-lived processes.
 class MemorySpool implements Spool {
   final _entries = <String, List<SignedEnvelope>>{};
+
+  /// Batches the API refused for good.
+  final dead = <List<SignedEnvelope>>[];
   var _next = 0;
 
   int get length => _entries.values.fold(0, (sum, e) => sum + e.length);
@@ -52,4 +58,9 @@ class MemorySpool implements Spool {
 
   @override
   Future<void> remove(String id) async => _entries.remove(id);
+
+  @override
+  Future<void> writeDead(List<SignedEnvelope> envelopes) async {
+    if (envelopes.isNotEmpty) dead.add([...envelopes]);
+  }
 }

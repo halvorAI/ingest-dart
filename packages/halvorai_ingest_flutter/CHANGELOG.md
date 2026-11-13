@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-dev.1 (unreleased)
+## 0.1.0-dev.2 (unreleased)
 
 - `HalvorFlutter.start`: device-signed, backend-forwarded delivery for iOS and Android. The app never holds an API key.
 - Device keys in secure storage (`SecureKeyStore`): iOS Keychain this-device-only, Android Keystore-backed. A fresh install replaces a key a previous install left in the Keychain.
@@ -18,3 +18,7 @@ Fixes from the core review:
 - `start()` initializes the Flutter binding itself, so it works before `runApp`.
 - `resetIdentity()` waits for a registration under way, so no new key is left behind.
 - `FileSpool` removes temp files a crash left behind.
+
+Following HalvorAI's shared SDK behaviour (ape-schema `docs/SDK.md`), through `halvorai_ingest` 0.1.0-dev.2:
+- Spool files are named `halvor-spool-<epoch ms>-<hex>.jsonl`, the format every SDK shares, and batches refused for good go to `dead/`.
+- Events missing from a response count as accepted (with a one-time warning), and an event's own `environment` is kept.

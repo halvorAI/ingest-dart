@@ -44,7 +44,7 @@ sealed class DeliveryOutcome {
 }
 
 class DeliveryOk extends DeliveryOutcome {
-  /// The API answers for each event; an event with no result counts as unconfirmed.
+  /// The API answers for each event; an event with no result counts as accepted.
   const DeliveryOk(this.results) : perEvent = true;
 
   /// A destination with no per-event answers, such as a sink: every event counts as accepted.
@@ -216,7 +216,9 @@ String eventsUrl(String endpoint) {
 }
 
 const _retryStatuses = {408, 429, 500, 502, 503, 504};
-const _fatalStatuses = {400, 401, 403, 422};
+
+/// Never retried: the batch goes to the spool's dead letters (docs/SDK.md §5).
+const _fatalStatuses = {400, 401, 403, 404, 405, 409, 410, 415, 422};
 
 /// Posts `{"events": [...]}` and classifies the response. Never throws.
 ///
@@ -260,15 +262,16 @@ Future<DeliveryOutcome> postEnvelopes(
       error?.message ?? 'HTTP $status',
       serverCode: error?.code,
       details: error?.details,
-      requestId: error?.requestId,
+      requestId: error?.requestId ?? response.headers['request-id'],
     );
   }
   if (_retryStatuses.contains(status) || status < 200 || status >= 300) {
     return DeliveryRetry(error?.message ?? 'HTTP $status', status: status, serverCode: error?.code);
   }
 
-  // An empty 2xx (a backend answering 204) was received but confirms nothing; retrying it would
-  // loop forever. A non-JSON body is still retried: on a phone it is often a captive portal.
+  // An empty 2xx (a backend answering 204) has no results, so its events count as accepted
+  // (docs/SDK.md §5); retrying it would loop forever. A non-JSON body is still retried: on a
+  // phone it is often a captive portal.
   if (response.body.trim().isEmpty) return const DeliveryOk([]);
   try {
     final body = jsonDecode(response.body);
