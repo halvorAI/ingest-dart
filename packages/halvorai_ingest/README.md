@@ -69,6 +69,27 @@ Delivery follows HalvorAI's shared SDK behaviour ([docs/SDK.md](https://github.c
 
 Dart has no reliable exit hook, so call `close()` before a server process exits. Flutter apps get this from `halvorai_ingest_flutter`, which flushes when the app goes to the background.
 
+## x402
+
+`package:halvorai_ingest/x402.dart` records x402 v2 payments made over `package:http`. It only reads payment headers; requests and responses pass through unchanged. Give `HalvorX402Client` to your x402 client **as the HTTP client it pays with**, so it sees every request that client makes:
+
+```dart
+import 'package:halvorai_ingest/x402.dart';
+
+final http = HalvorX402Client(halvor); // halvor: a HalvorClient, or HalvorFlutter in an app
+// e.g. YourX402Client(httpClient: http, signer: …)
+```
+
+Wrapped around the outside of the x402 client instead, it would only see the final response, not the 402 or the signed retry.
+
+What it records:
+- **The 402 challenge** (`PAYMENT-REQUIRED`) becomes `payment.requested`.
+- **The signed retry** (`PAYMENT-SIGNATURE`) becomes `payment.authorized`, linked to its challenge with `related.previous_event_id`, with the payload attached as evidence. x402 gives a challenge no id, so the match uses the URL, the terms and the `withAgentContext` the request ran in. If that leaves more than one open challenge, the payment is recorded with no link rather than a guessed one, so run concurrent purchases in their own `withAgentContext`.
+- **The settlement** (`PAYMENT-RESPONSE`) becomes `payment.settled` or `payment.failed`, with the same `payment_id`.
+- **A header it can't decode,** or a challenge without a network or token address, is reported as `invalid_event`, never guessed and never thrown into the request.
+
+The events are the same as the Node.js and Python SDKs produce, checked against their shared fixtures.
+
 ## Agent context
 
 `withAgentContext` uses `Zone` values, so the context follows `await`, timers and futures started inside it. Callbacks registered outside it, such as Flutter widget handlers, do not see it: wrap the agent's task, or set `agent:`/`owner:` on the event.
@@ -81,7 +102,7 @@ dart analyze
 dart test
 ```
 
-`test/fixtures/conformance/` is a copy of [ape-schema's conformance files](https://schema.halvorai.com/conformance/), the events, signing vector and canonical-JSON vectors the Node.js and Python SDKs test against too. Refresh it with `tool/sync_conformance.sh`.
+`test/fixtures/conformance/` is a copy of [ape-schema's conformance files](https://schema.halvorai.com/conformance/), the events, signing vector and canonical-JSON vectors the Node.js and Python SDKs test against too. Refresh it with `tool/sync_conformance.sh`. `test/fixtures/x402/` holds the Node.js SDK's x402 fixtures and its output for them, from `tool/gen_x402_expected.mjs`.
 
 ## License
 

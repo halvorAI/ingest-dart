@@ -59,7 +59,7 @@ String? apiKeyProblem(String apiKey, Environment environment, {required bool deb
 /// emitted in. Delivery is batched; undelivered batches are kept on disk and retried, and the
 /// queue is flushed when the app goes to the background. Like the core client, nothing here
 /// throws: problems are reported through `onError`.
-class HalvorFlutter with WidgetsBindingObserver {
+class HalvorFlutter with WidgetsBindingObserver implements HalvorEmitter {
   HalvorFlutter._({
     required Environment environment,
     required DeviceIdentity? identity,
@@ -276,6 +276,7 @@ class HalvorFlutter with WidgetsBindingObserver {
   }
 
   /// Queues a partial event given as JSON and returns its id. Never throws.
+  @override
   String emitJson(Map<String, Object?> event) {
     final client = _client;
     if (client != null) return client.emitJson(event);
@@ -300,6 +301,18 @@ class HalvorFlutter with WidgetsBindingObserver {
       }
     }
     return id;
+  }
+
+  /// For adapters such as `HalvorX402Client`: reports a decode or mapping failure through
+  /// `onError`. Never throws.
+  @override
+  void notify(SdkError error) {
+    final client = _client;
+    if (client != null) {
+      client.notify(error);
+    } else {
+      _report(error);
+    }
   }
 
   /// Events dropped because too many were waiting for registration.
