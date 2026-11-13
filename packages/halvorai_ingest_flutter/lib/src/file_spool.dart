@@ -44,13 +44,15 @@ class FileSpool implements Spool {
   );
 
   @override
-  Future<void> write(List<SignedEnvelope> envelopes) async {
-    if (envelopes.isEmpty) return;
+  Future<String?> write(List<SignedEnvelope> envelopes) async {
+    if (envelopes.isEmpty) return null;
     await directory.create(recursive: true);
     final stamp = _now().millisecondsSinceEpoch.toString().padLeft(15, '0');
     final suffix = _random.nextInt(1 << 32).toRadixString(16).padLeft(8, '0');
-    await _writeAtomically('halvor-spool-$stamp-$suffix.jsonl', envelopes);
+    final id = 'halvor-spool-$stamp-$suffix.jsonl';
+    await _writeAtomically(id, envelopes);
     await _enforceLimits();
+    return id;
   }
 
   @override
@@ -74,7 +76,9 @@ class FileSpool implements Spool {
   }
 
   @override
-  Future<void> writeDead(List<SignedEnvelope> envelopes) => _dead.write(envelopes);
+  Future<void> writeDead(List<SignedEnvelope> envelopes) async {
+    await _dead.write(envelopes);
+  }
 
   @override
   Future<void> remove(String id) async {

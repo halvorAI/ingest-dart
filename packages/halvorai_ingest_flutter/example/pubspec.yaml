@@ -1,0 +1,27 @@
+name: halvorai_example
+description: HalvorAI Flutter example. Device-signed payment events through a demo backend.
+publish_to: none
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  halvorai_ingest: ^0.1.0-dev.2
+  halvorai_ingest_flutter: ^0.1.0-dev.2
+  http: ^1.3.0
+  path_provider: ^2.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

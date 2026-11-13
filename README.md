@@ -5,7 +5,7 @@ Dart and Flutter SDKs for HalvorAI: signed, attributed payment events for AI age
 | Package | Status | What it is |
 | --- | --- | --- |
 | [`halvorai_ingest`](packages/halvorai_ingest) | Developer preview | Pure-Dart core: event models, signing, validation, redaction, delivery |
-| [`halvorai_ingest_flutter`](packages/halvorai_ingest_flutter) | Developer preview | iOS and Android: device keys in secure storage, registration through your backend, disk spool, app-lifecycle flushing |
+| [`halvorai_ingest_flutter`](packages/halvorai_ingest_flutter) | Developer preview | iOS and Android: device keys in secure storage, registration through your backend, disk spool, app-lifecycle flushing. Runnable [example](packages/halvorai_ingest_flutter/example) with a demo backend |
 
 Siblings: [ingest-js](https://github.com/halvorAI/ingest-js) (Node.js) and [ingest-python](https://github.com/halvorAI/ingest-python).
 
