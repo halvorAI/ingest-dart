@@ -1,0 +1,50 @@
+name: Publish to pub.dev
+# pub.dev only accepts a publish from a workflow started by a tag push. See RELEASING.md.
+on:
+  push:
+    tags:
+      - 'halvorai_ingest-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'halvorai_ingest_flutter-v[0-9]+.[0-9]+.[0-9]+*'
+permissions:
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pub.dev
+    permissions:
+      contents: read
+      id-token: write # pub.dev trusted publishing (OIDC), no token
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find the package and check the tag matches its version
+        id: package
+        run: |
+          package="${GITHUB_REF_NAME%-v*}"
+          version="${GITHUB_REF_NAME#"${package}-v"}"
+          test -f "packages/${package}/pubspec.yaml"
+          test "$(grep -m1 '^version:' "packages/${package}/pubspec.yaml" | cut -d' ' -f2)" = "${version}"
+          echo "name=${package}" >> "$GITHUB_OUTPUT"
+          # The first version of each package is published by hand and tagged afterwards.
+          if curl -fsS -o /dev/null "https://pub.dev/api/packages/${package}/versions/${version}"; then
+            echo "${package} ${version} is already on pub.dev; nothing to publish."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+      # Requests the OIDC token and hands it to pub. The reusable publish workflow can't be used:
+      # this is a pub workspace with a Flutter package, so it resolves with Flutter only.
+      - uses: dart-lang/setup-dart@v1
+        if: steps.package.outputs.published != 'true'
+      - uses: subosito/flutter-action@v2
+        if: steps.package.outputs.published != 'true'
+        with:
+          channel: stable
+      - run: flutter pub get
+        if: steps.package.outputs.published != 'true'
+      - run: dart test
+        if: steps.package.outputs.published != 'true'
+        working-directory: packages/halvorai_ingest
+      - run: flutter test
+        if: steps.package.outputs.published != 'true'
+        working-directory: packages/halvorai_ingest_flutter
+      - run: flutter pub publish --force
+        if: steps.package.outputs.published != 'true'
+        working-directory: packages/${{ steps.package.outputs.name }}

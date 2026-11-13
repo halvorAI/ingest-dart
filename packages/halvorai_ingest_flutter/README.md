@@ -2,7 +2,7 @@
 
 Signed, attributed payment events for AI agents in Flutter apps. Each install signs its own events with a key kept in the platform's secure storage, and your backend forwards them to HalvorAI unchanged. **The app never holds an API key.** Like the core package, it is never in the payment path: `emit` returns at once and never throws.
 
-> **Developer preview.** iOS and Android. Built on [`halvorai_ingest`](../halvorai_ingest), which it re-exports.
+> **Developer preview.** iOS and Android. Built on [`halvorai_ingest`](https://pub.dev/packages/halvorai_ingest), which it re-exports.
 
 ## How it works
 
@@ -15,6 +15,16 @@ App ──signed events──▶ your backend ──unchanged──▶ HalvorAI 
 2. Events are signed on the device and posted to your backend. It checks that each event's owner is the signed-in user, then forwards the body byte for byte and returns HalvorAI's response.
 
 The Node.js and Python server SDKs provide both routes as `registerDeviceSource` / `register_device_source` and `forwardEnvelopes` / `forward_envelopes`.
+
+## Install
+
+This is a pre-release, so name the version:
+
+```bash
+flutter pub add 'halvorai_ingest_flutter:^0.1.0-dev.2'
+```
+
+Android needs `minSdkVersion 23` or higher; see [Setup](#setup).
 
 ## Use
 

@@ -8,6 +8,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+// Flutter 3.50 deprecates this import, but its replacement isn't in 3.27, the oldest Flutter
+// this package supports.
+// ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:halvorai_ingest/x402.dart';
 import 'package:halvorai_ingest_flutter/halvorai_ingest_flutter.dart';
