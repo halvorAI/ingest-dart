@@ -2,11 +2,19 @@
 
 Signed, attributed payment events for AI agents, in pure Dart. HalvorAI records each payment an agent makes, with the agent, the owner it acted for, the instruction it followed and the network proof that came with it. It is never in the payment path: `emit` returns at once, never throws and never waits on the network.
 
-> **Developer preview.** This is the core package. Flutter apps use [`halvorai_ingest_flutter`](../halvorai_ingest_flutter), which adds secure key storage, a disk spool and device provisioning on top of it.
+> **Developer preview.** This is the core package. Flutter apps use [`halvorai_ingest_flutter`](https://pub.dev/packages/halvorai_ingest_flutter), which adds secure key storage, a disk spool and device provisioning on top of it.
 
 - Docs: [docs.halvorai.com](https://docs.halvorai.com)
 - Event format: [Agent Payment Event (APE) v0.1](https://schema.halvorai.com)
 - Dart 3.6 or later; no Flutter or `dart:io` imports
+
+## Install
+
+This is a pre-release, so name the version:
+
+```bash
+dart pub add 'halvorai_ingest:^0.1.0-dev.2'
+```
 
 ## Try it offline
 

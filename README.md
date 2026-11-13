@@ -20,6 +20,10 @@ flutter analyze
 (cd packages/halvorai_ingest_flutter && flutter test)
 ```
 
+## Release
+
+See [RELEASING.md](RELEASING.md).
+
 ## Security
 
 Report vulnerabilities privately to hello@halvorai.com.

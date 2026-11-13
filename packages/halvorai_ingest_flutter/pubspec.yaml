@@ -16,6 +16,11 @@ environment:
 
 resolution: workspace
 
+# Device keys and the disk spool are built and tested for these two only.
+platforms:
+  android:
+  ios:
+
 dependencies:
   flutter:
     sdk: flutter

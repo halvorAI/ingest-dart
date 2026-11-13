@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0-dev.2 (unreleased)
+## 0.1.0-dev.2
 
 - `HalvorFlutter.start`: device-signed, backend-forwarded delivery for iOS and Android. The app never holds an API key.
 - Device keys in secure storage (`SecureKeyStore`): iOS Keychain this-device-only, Android Keystore-backed. A fresh install replaces a key a previous install left in the Keychain.
