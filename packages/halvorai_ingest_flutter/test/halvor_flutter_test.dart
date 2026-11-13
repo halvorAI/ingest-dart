@@ -128,6 +128,13 @@ void main() {
     expect(halvor.isReady, isTrue, reason: 'registration did not finish: $errors');
   }
 
+  /// Waits until [done], for at most two seconds. A fixed wait was too short on a slow CI runner.
+  Future<void> until(bool Function() done) async {
+    for (var i = 0; i < 200 && !done(); i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
   group('registration', () {
     test('registers the public key through the backend, per the provisioning contract', () async {
       final halvor = await start();
@@ -256,7 +263,7 @@ void main() {
       halvor.emit(_settled());
 
       halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await until(() => backend.delivered.length == 1);
       expect(backend.delivered, hasLength(1));
       await halvor.close();
     });
@@ -268,7 +275,7 @@ void main() {
       backend.deliveryDown = true;
       halvor.emit(_settled());
       halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
-      await Future<void>.delayed(const Duration(milliseconds: 500));
+      await until(() => halvor.stats().spooled == 1);
       expect(halvor.stats().spooled, 1);
       expect(Directory('${dir.path}/spool').listSync().whereType<File>(), hasLength(1));
       await halvor.close(timeout: Duration.zero);
@@ -282,7 +289,7 @@ void main() {
 
       halvor.didChangeAppLifecycleState(AppLifecycleState.hidden);
       halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await until(() => backend.deliveries.length == 1);
 
       expect(backend.deliveries, hasLength(1), reason: 'the send is under way, and hanging');
       expect(backend.delivered, isEmpty);
@@ -302,11 +309,15 @@ void main() {
       final hang = backend.deliveryHang = Completer<void>();
       halvor.emit(_settled());
       halvor.didChangeAppLifecycleState(AppLifecycleState.paused);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await until(() => backend.deliveries.length == 1);
 
       backend.deliveryHang = null;
       hang.complete();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await until(
+        () =>
+            backend.delivered.length == 1 &&
+            Directory('${dir.path}/spool').listSync().whereType<File>().isEmpty,
+      );
       expect(backend.delivered, hasLength(1));
       expect(Directory('${dir.path}/spool').listSync().whereType<File>(), isEmpty);
       await halvor.close();
@@ -493,7 +504,7 @@ void main() {
       halvor.emit(_settled());
 
       tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await until(() => backend.delivered.length == 1);
       expect(backend.delivered, hasLength(1));
 
       await halvor.close();
