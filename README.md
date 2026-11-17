@@ -1,5 +1,7 @@
 # ingest-dart
 
+> **Archived on 17 Nov 2026.** This repository is read-only and no longer maintained. For new integrations, use [ingest-js](https://github.com/halvorAI/ingest-js) (Node.js) or [ingest-python](https://github.com/halvorAI/ingest-python). If you need Dart or Flutter, contact us at hello@halvorai.com.
+
 Dart and Flutter SDKs for HalvorAI: signed, attributed payment events for AI agents.
 
 | Package | Status | What it is |
