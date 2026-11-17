@@ -1,5 +1,7 @@
 # halvorai_ingest_flutter
 
+> **Archived on 17 Nov 2026.** This package is no longer maintained; see the [repository README](https://github.com/halvorAI/ingest-dart#readme). Use [ingest-js](https://github.com/halvorAI/ingest-js) or [ingest-python](https://github.com/halvorAI/ingest-python) instead, or contact us at hello@halvorai.com if you need Dart or Flutter.
+
 Signed, attributed payment events for AI agents in Flutter apps. Each install signs its own events with a key kept in the platform's secure storage, and your backend forwards them to HalvorAI unchanged. **The app never holds an API key.** Like the core package, it is never in the payment path: `emit` returns at once and never throws.
 
 > **Developer preview.** iOS and Android. Built on [`halvorai_ingest`](../halvorai_ingest), which it re-exports.
